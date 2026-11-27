@@ -33,6 +33,7 @@ void tui_cfg_state_free(tui_cfg_state_t *st);
 
 void tui_cfg_move_up(tui_cfg_state_t *st);
 void tui_cfg_move_down(tui_cfg_state_t *st);
+void tui_cfg_step_selected(tui_cfg_state_t *st, int delta);
 void tui_cfg_toggle_selected(tui_cfg_state_t *st);
 void tui_cfg_restore_defaults(tui_cfg_state_t *st);
 bool tui_cfg_add_alias_expr(tui_cfg_state_t *st, const wchar_t *expr);

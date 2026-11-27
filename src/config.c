@@ -4,6 +4,29 @@
 #include <stdlib.h>
 #include <string.h>
 
+const wchar_t *config_theme_name(plumbus_theme_t theme) {
+    switch (theme) {
+        case THEME_AGNOSTER: return L"agnoster";
+        case THEME_OMB_BOX:  return L"omb-box";
+        case THEME_PURE:     return L"pure";
+        case THEME_DRACULA:  return L"dracula";
+        case THEME_MINIMAL:  return L"minimal";
+        case THEME_ROBBYRUSSELL:
+        default:             return L"robbyrussell";
+    }
+}
+
+bool config_theme_from_name(const wchar_t *name, plumbus_theme_t *out_theme) {
+    if (!name || !out_theme) return false;
+    if (_wcsicmp(name, L"robbyrussell") == 0) { *out_theme = THEME_ROBBYRUSSELL; return true; }
+    if (_wcsicmp(name, L"agnoster") == 0)     { *out_theme = THEME_AGNOSTER; return true; }
+    if (_wcsicmp(name, L"omb-box") == 0 || _wcsicmp(name, L"box") == 0) { *out_theme = THEME_OMB_BOX; return true; }
+    if (_wcsicmp(name, L"pure") == 0)         { *out_theme = THEME_PURE; return true; }
+    if (_wcsicmp(name, L"dracula") == 0)      { *out_theme = THEME_DRACULA; return true; }
+    if (_wcsicmp(name, L"minimal") == 0)      { *out_theme = THEME_MINIMAL; return true; }
+    return false;
+}
+
 void config_reset_defaults(plumbus_config_t *cfg) {
     if (!cfg) return;
     cfg->theme = THEME_ROBBYRUSSELL;
@@ -211,8 +234,7 @@ bool config_load_rc(plumbus_config_t *cfg) {
             } else if (_wcsnicmp(line, L"theme", 5) == 0 && (line[5] == L'=' || line[5] == L' ' || line[5] == L'\t')) {
                 wchar_t *val = trim_w(line + 6);
                 strip_matching_quotes(val);
-                if (_wcsicmp(val, L"agnoster") == 0) cfg->theme = THEME_AGNOSTER;
-                else if (_wcsicmp(val, L"robbyrussell") == 0) cfg->theme = THEME_ROBBYRUSSELL;
+                config_theme_from_name(val, &cfg->theme);
             } else if (_wcsnicmp(line, L"nerd_fonts", 10) == 0 && (line[10] == L'=' || line[10] == L' ' || line[10] == L'\t')) {
                 cfg->nerd_fonts = parse_bool_val(trim_w(line + 11));
             } else if (_wcsnicmp(line, L"syntax_highlighting", 19) == 0 && (line[19] == L'=' || line[19] == L' ' || line[19] == L'\t')) {
@@ -273,7 +295,7 @@ bool config_save(const plumbus_config_t *cfg) {
              L"# Interactive Line Editor\r\n"
              L"syntax_highlighting=%ls\r\n"
              L"ghost_text=%ls\r\n",
-             cfg->theme == THEME_AGNOSTER ? L"agnoster" : L"robbyrussell",
+             config_theme_name(cfg->theme),
              cfg->nerd_fonts ? L"on" : L"off",
              cfg->git_status ? L"on" : L"off",
              cfg->syntax_highlighting ? L"on" : L"off",

@@ -22,6 +22,12 @@ bool shell_ctx_init(shell_ctx_t *ctx, const cmd_options_t *opts, const wchar_t *
 void shell_ctx_free(shell_ctx_t *ctx);
 
 /*
+ * Returns true if line has balanced quotes/parens and no trailing escape/operator
+ * that could swallow or corrupt an appended '& call ... --__sync-state' tail.
+ */
+bool exec_is_safe_for_sync_tail(const wchar_t *line);
+
+/*
  * Executes one interactive command line using hybrid fast-path / direct CreateProcessW /
  * Sync Bridge, updating ctx->last_exit_code and persisting CWD + ENV changes.
  */

@@ -163,6 +163,16 @@ TEST_CASE(test_tui_f2_plumbus_config_and_ghost_clear) {
     ASSERT_TRUE(strstr(after_enter, "lo_ghost_tail") == NULL);
     LeaveCriticalSection(&cap.cs);
 
+    /* Case D: Switch to omb-box two-line theme and verify multiline redraw doesn't duplicate header */
+    Sleep(100);
+    pos = get_len(&cap);
+    send_bytes(in_w, "theme omb-box\r");
+    ASSERT_TRUE(wait_for_substr(&cap, pos, "\xE2\x94\x8F\xE2\x94\x81\xE2\x94\x81", 3000)); /* ┏━━ */
+    ASSERT_TRUE(wait_for_substr(&cap, pos, "\xE2\x94\x97\xE2\x94\x81", 3000)); /* ┗━ */
+    pos = get_len(&cap);
+    send_bytes(in_w, "echo multiline_ok\r");
+    ASSERT_TRUE(wait_for_substr(&cap, pos, "multiline_ok", 3000));
+
     send_bytes(in_w, "exit\r");
     if (WaitForSingleObject(pi.hProcess, 3000) != WAIT_OBJECT_0) {
         TerminateProcess(pi.hProcess, 1);

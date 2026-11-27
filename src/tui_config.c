@@ -46,12 +46,15 @@ void tui_cfg_move_down(tui_cfg_state_t *st) {
     }
 }
 
-void tui_cfg_toggle_selected(tui_cfg_state_t *st) {
+void tui_cfg_step_selected(tui_cfg_state_t *st, int delta) {
     if (!st || st->in_alias_panel) return;
     switch (st->selected) {
-        case TUI_ITEM_THEME:
-            st->draft.theme = (st->draft.theme == THEME_ROBBYRUSSELL) ? THEME_AGNOSTER : THEME_ROBBYRUSSELL;
+        case TUI_ITEM_THEME: {
+            int cur = (int)st->draft.theme;
+            int nxt = (cur + delta + (int)THEME_COUNT) % (int)THEME_COUNT;
+            st->draft.theme = (plumbus_theme_t)nxt;
             break;
+        }
         case TUI_ITEM_NERD_FONTS:
             st->draft.nerd_fonts = !st->draft.nerd_fonts;
             break;
@@ -72,6 +75,10 @@ void tui_cfg_toggle_selected(tui_cfg_state_t *st) {
         default:
             break;
     }
+}
+
+void tui_cfg_toggle_selected(tui_cfg_state_t *st) {
+    tui_cfg_step_selected(st, 1);
 }
 
 void tui_cfg_restore_defaults(tui_cfg_state_t *st) {
@@ -186,7 +193,7 @@ static void render_tui(const tui_cfg_state_t *st, const wchar_t *cwd, int last_e
     if (box_w < 54) box_w = 54;
     int inner_w = box_w - 2;
     int left = (term_w > box_w) ? ((term_w - box_w) / 2 + 1) : 1;
-    int box_h = 19;
+    int box_h = 20;
     int top = (term_h > box_h) ? ((term_h - box_h) / 2 + 1) : 1;
 
     tbuf_t tb = { NULL, 0, 0 };
@@ -221,17 +228,30 @@ static void render_tui(const tui_cfg_state_t *st, const wchar_t *cwd, int last_e
 
     wchar_t *p_ansi = prompt_render(&st->draft, cwd ? cwd : L"C:\\Projects\\Plumbus",
                                     last_exit_code, st->draft.git_status ? &preview_git : NULL);
-    wchar_t preview_line[2048];
     const wchar_t *cmd_sample = st->draft.syntax_highlighting
         ? L"\x1b[38;2;80;250;123mgit\x1b[0m status"
         : L"git status";
     const wchar_t *ghost_sample = st->draft.ghost_text
         ? L"\x1b[38;2;110;110;110m --short\x1b[0m"
         : L"";
-    swprintf(preview_line, sizeof(preview_line) / sizeof(preview_line[0]),
-             L"%ls%ls%ls", p_ansi ? p_ansi : L"> ", cmd_sample, ghost_sample);
-    free(p_ansi);
-    draw_box_row(&tb, r++, left, inner_w, preview_line);
+
+    wchar_t preview_row1[2048] = { 0 };
+    wchar_t preview_row2[2048] = { 0 };
+    if (p_ansi) {
+        wchar_t *nl = wcschr(p_ansi, L'\n');
+        if (nl) {
+            *nl = L'\0';
+            wcsncpy(preview_row1, p_ansi, 2047);
+            swprintf(preview_row2, 2048, L"%ls%ls%ls", nl + 1, cmd_sample, ghost_sample);
+        } else {
+            swprintf(preview_row1, 2048, L"%ls%ls%ls", p_ansi, cmd_sample, ghost_sample);
+        }
+        free(p_ansi);
+    } else {
+        swprintf(preview_row1, 2048, L"> %ls%ls", cmd_sample, ghost_sample);
+    }
+    draw_box_row(&tb, r++, left, inner_w, preview_row1);
+    draw_box_row(&tb, r++, left, inner_w, preview_row2);
 
     tb_goto(&tb, r++, left);
     tb_add(&tb, L"\x1b[38;2;98;114;164m\u251C");
@@ -240,6 +260,10 @@ static void render_tui(const tui_cfg_state_t *st, const wchar_t *cwd, int last_e
 
     if (!st->in_alias_panel) {
         draw_box_row(&tb, r++, left, inner_w, L"");
+
+        wchar_t theme_val[64];
+        swprintf(theme_val, 64, L"\u2039 %ls \u203A (%d/%d)",
+                 config_theme_name(st->draft.theme), (int)st->draft.theme + 1, (int)THEME_COUNT);
 
         wchar_t alias_val[64];
         swprintf(alias_val, 64, L"[%zu configurado(s) -> Enter]", st->draft.alias_count);
@@ -253,7 +277,7 @@ static void render_tui(const tui_cfg_state_t *st, const wchar_t *cwd, int last_e
             L"Gerenciar Aliases"
         };
         const wchar_t *values[TUI_ITEM_COUNT] = {
-            st->draft.theme == THEME_AGNOSTER ? L"agnoster" : L"robbyrussell",
+            theme_val,
             st->draft.nerd_fonts ? L"ON" : L"OFF",
             st->draft.syntax_highlighting ? L"ON" : L"OFF",
             st->draft.ghost_text ? L"ON" : L"OFF",
@@ -436,8 +460,10 @@ bool tui_cfg_run(plumbus_config_t *live_cfg,
             tui_cfg_move_up(&st);
         } else if (vk == VK_DOWN) {
             tui_cfg_move_down(&st);
-        } else if (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_SPACE || vk == VK_RETURN || ch == L'\r') {
-            tui_cfg_toggle_selected(&st);
+        } else if (vk == VK_LEFT) {
+            tui_cfg_step_selected(&st, -1);
+        } else if (vk == VK_RIGHT || vk == VK_SPACE || vk == VK_RETURN || ch == L'\r') {
+            tui_cfg_step_selected(&st, 1);
         } else if (towlower(ch) == L'r') {
             tui_cfg_restore_defaults(&st);
         } else if (towlower(ch) == L's') {

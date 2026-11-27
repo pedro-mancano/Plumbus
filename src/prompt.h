@@ -18,4 +18,7 @@ wchar_t *prompt_render(const plumbus_config_t *cfg,
 /* Computes visible terminal column width by stripping ANSI CSI sequences */
 size_t prompt_visible_width(const wchar_t *ansi_str);
 
+/* Computes visible column width of the final line (after the last '\n') */
+size_t prompt_last_line_visible_width(const wchar_t *ansi_str);
+
 #endif /* PLUMBUS_PROMPT_H */

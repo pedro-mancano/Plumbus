@@ -1,5 +1,6 @@
 #include "line_editor.h"
 #include "console.h"
+#include "prompt.h"
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -199,6 +200,29 @@ static void redraw_reverse_search(const line_buf_t *query, const wchar_t *match)
     free(frame);
 }
 
+static void split_prompt(const wchar_t *full, wchar_t **out_header, wchar_t **out_input) {
+    const wchar_t *src = full ? full : L"> ";
+    const wchar_t *nl = wcsrchr(src, L'\n');
+    if (!nl) {
+        *out_header = NULL;
+        *out_input = _wcsdup(src);
+        return;
+    }
+    size_t hlen = (size_t)(nl - src);
+    *out_header = (wchar_t *)malloc((hlen + 1) * sizeof(wchar_t));
+    if (*out_header) {
+        if (hlen > 0) memcpy(*out_header, src, hlen * sizeof(wchar_t));
+        (*out_header)[hlen] = L'\0';
+    }
+    *out_input = _wcsdup(nl + 1);
+}
+
+static void emit_prompt_header(const wchar_t *header) {
+    if (!header || !*header) return;
+    console_write_w(header, wcslen(header));
+    console_write_w(L"\r\n", 2);
+}
+
 line_read_status_t line_editor_read(const wchar_t *prompt_ansi,
                                     size_t prompt_visible_len,
                                     history_t *hist,
@@ -209,11 +233,15 @@ line_read_status_t line_editor_read(const wchar_t *prompt_ansi,
                                     line_editor_config_cb_fn cfg_cb,
                                     void *cfg_user_data,
                                     wchar_t **out_line) {
+    (void)prompt_visible_len;
     *out_line = NULL;
     HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
 
-    wchar_t *cur_prompt = _wcsdup(prompt_ansi ? prompt_ansi : L"> ");
-    size_t cur_pvis = prompt_visible_len;
+    wchar_t *cur_header = NULL;
+    wchar_t *cur_prompt = NULL;
+    split_prompt(prompt_ansi, &cur_header, &cur_prompt);
+    if (!cur_prompt) cur_prompt = _wcsdup(L"> ");
+    size_t cur_pvis = prompt_last_line_visible_width(cur_prompt);
     bool hl_on = enable_highlight;
     bool ghost_on = enable_ghost_text;
 
@@ -234,6 +262,7 @@ line_read_status_t line_editor_read(const wchar_t *prompt_ansi,
     bool comp_active = false;
 
     const wchar_t *ghost = NULL;
+    emit_prompt_header(cur_header);
     redraw_line(cur_prompt, cur_pvis, &lb, ghost, hl_on, alias_fn, alias_user_data);
 
     line_read_status_t status = LINE_READ_OK;
@@ -261,10 +290,16 @@ line_read_status_t line_editor_read(const wchar_t *prompt_ansi,
             wchar_t *new_p = NULL;
             size_t new_vis = cur_pvis;
             if (cfg_cb(cfg_user_data, &new_p, &new_vis, &hl_on, &ghost_on) && new_p) {
+                free(cur_header);
                 free(cur_prompt);
-                cur_prompt = new_p;
-                cur_pvis = new_vis;
+                cur_header = NULL;
+                cur_prompt = NULL;
+                split_prompt(new_p, &cur_header, &cur_prompt);
+                free(new_p);
+                if (!cur_prompt) cur_prompt = _wcsdup(L"> ");
+                cur_pvis = prompt_last_line_visible_width(cur_prompt);
             }
+            emit_prompt_header(cur_header);
             ghost = (ghost_on && lb.cursor == lb.len) ? history_find_ghost_suffix(hist, lb.buf) : NULL;
             redraw_line(cur_prompt, cur_pvis, &lb, ghost, hl_on, alias_fn, alias_user_data);
             continue;
@@ -392,6 +427,7 @@ line_read_status_t line_editor_read(const wchar_t *prompt_ansi,
             line_buf_kill_to_end(&lb);
         } else if (ctrl && vk == 'L') {
             console_clear_screen();
+            emit_prompt_header(cur_header);
         } else if (ctrl && vk == VK_LEFT) {
             line_buf_move_word_left(&lb);
         } else if (ctrl && vk == VK_RIGHT) {
@@ -434,6 +470,7 @@ line_read_status_t line_editor_read(const wchar_t *prompt_ansi,
     if (status == LINE_READ_OK) {
         *out_line = _wcsdup(lb.buf);
     }
+    free(cur_header);
     free(cur_prompt);
     completion_free(&comp);
     line_buf_free(&search_q);

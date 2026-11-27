@@ -80,8 +80,17 @@ TEST_CASE(test_tui_config_state_navigation_toggles_and_aliases) {
     tui_cfg_state_init(&st, &live);
     ASSERT_EQ_INT(TUI_ITEM_THEME, st.selected);
 
-    /* Toggle theme -> agnoster */
-    tui_cfg_toggle_selected(&st);
+    /* Toggle theme forward across all THEME_COUNT themes & back */
+    for (int i = 1; i < (int)THEME_COUNT; i++) {
+        tui_cfg_step_selected(&st, 1);
+        ASSERT_EQ_INT(i, st.draft.theme);
+    }
+    tui_cfg_step_selected(&st, 1);
+    ASSERT_EQ_INT(THEME_ROBBYRUSSELL, st.draft.theme);
+    tui_cfg_step_selected(&st, -1);
+    ASSERT_EQ_INT(THEME_MINIMAL, st.draft.theme);
+    tui_cfg_step_selected(&st, 1);
+    tui_cfg_step_selected(&st, 1); /* agnoster */
     ASSERT_EQ_INT(THEME_AGNOSTER, st.draft.theme);
 
     /* Navigate down to syntax highlighting and toggle off */

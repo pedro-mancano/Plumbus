@@ -7,7 +7,12 @@
 
 typedef enum {
     THEME_ROBBYRUSSELL = 0,
-    THEME_AGNOSTER
+    THEME_AGNOSTER,
+    THEME_OMB_BOX,
+    THEME_PURE,
+    THEME_DRACULA,
+    THEME_MINIMAL,
+    THEME_COUNT
 } plumbus_theme_t;
 
 typedef struct {
@@ -30,6 +35,9 @@ void config_init(plumbus_config_t *cfg);
 void config_free(plumbus_config_t *cfg);
 void config_reset_defaults(plumbus_config_t *cfg);
 bool config_copy(plumbus_config_t *dst, const plumbus_config_t *src);
+
+const wchar_t *config_theme_name(plumbus_theme_t theme);
+bool config_theme_from_name(const wchar_t *name, plumbus_theme_t *out_theme);
 
 /* Loads PLUMBUS_RC_FILE override or %USERPROFILE%\.cmdrc (returns true even if file absent) */
 bool config_load_rc(plumbus_config_t *cfg);

@@ -16,7 +16,7 @@
 
 ## Prévia Visual
 
-### Temas de Prompt (`robbyrussell` e `agnoster`) + Syntax Highlighting
+### Temas de Prompt (`robbyrussell`, `agnoster`, `omb-box`, `pure`, `dracula`, `minimal`) + Syntax Highlighting
 
 ```text
 # Tema padrão (robbyrussell) com repositório Git limpo e comando válido:
@@ -24,9 +24,9 @@
                                    ^^^ ^^^^^^ ^^^^^^^
                                    verde ciano ghost-text
 
-# Após erro (ExitCode 9009) e repositório sujo:
-➜ ~\Projects\Plumbus git:(main) ✗ nao_existe_xyz
-^ vermelho                        ^^^^^^^^^^^^^^ vermelho
+# Tema Oh My Bash duas linhas (omb-box) com parser Git nativo:
+┏━━pedro at WORKSTATION in ~\Projects\Plumbus on main ✔
+┗━$ git status
 
 # Tema Powerline (agnoster com Nerd Fonts):
  ~\Projects\Plumbus   main ✔  dir /a "minha pasta"
@@ -94,7 +94,7 @@
 ### Comandos Built-in Interativos
 - `plumbus config` / `config` — abre o configurador TUI (se não houver `config.exe`/`.bat` no diretório atual)
 - `alias` / `alias nome=comando` / `unalias nome` — gerencia aliases em tempo real
-- `theme` / `theme robbyrussell` / `theme agnoster` — alterna o tema do prompt
+- `theme` / `theme <nome>` — alterna entre os 6 temas (`robbyrussell`, `agnoster`, `omb-box`, `pure`, `dracula`, `minimal`)
 - `cd`, `chdir`, `X:`, `pushd`, `popd`, `exit [N]` — fast-path nativo em C
 
 ### Arquivo de Configuração (`%USERPROFILE%\.cmdrc`)

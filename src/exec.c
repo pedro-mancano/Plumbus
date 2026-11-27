@@ -259,6 +259,92 @@ static bool starts_with_call_ci(const wchar_t *line) {
     return _wcsnicmp(p, L"call", 4) == 0 && (p[4] == L' ' || p[4] == L'\t');
 }
 
+bool exec_is_safe_for_sync_tail(const wchar_t *line) {
+    if (!line) return false;
+    const wchar_t *p = skip_ws(line);
+    size_t len = wcslen(p);
+    if (len == 0) return false;
+
+    /* Check trailing '^' on the raw line (before trimming trailing spaces, though trailing ws after ^ escapes space) */
+    size_t caret_run = 0;
+    for (size_t i = len; i > 0 && p[i - 1] == L'^'; i--) {
+        caret_run++;
+    }
+    if ((caret_run & 1u) != 0) {
+        return false;
+    }
+
+    /* Trim trailing whitespace to inspect final operator */
+    while (len > 0 && (p[len - 1] == L' ' || p[len - 1] == L'\t' || p[len - 1] == L'\r' || p[len - 1] == L'\n')) {
+        len--;
+    }
+    if (len == 0) return false;
+
+    wchar_t last = p[len - 1];
+    if (last == L'&' || last == L'|' || last == L'<' || last == L'>') {
+        return false;
+    }
+
+    size_t quote_count = 0;
+    int paren_depth = 0;
+    bool in_quotes = false;
+    for (size_t i = 0; i < len; i++) {
+        wchar_t c = p[i];
+        if (c == L'"') {
+            quote_count++;
+            in_quotes = !in_quotes;
+            continue;
+        }
+        if (!in_quotes) {
+            if (c == L'^' && i + 1 < len) {
+                i++; /* Skip escaped char */
+                continue;
+            }
+            if (c == L'(') {
+                paren_depth++;
+            } else if (c == L')') {
+                paren_depth--;
+                if (paren_depth < 0) return false;
+            }
+        }
+    }
+
+    if ((quote_count & 1u) != 0) return false;
+    if (paren_depth != 0) return false;
+    return true;
+}
+
+static bool is_comment_line(const wchar_t *p) {
+    if (p[0] == L':' && p[1] == L':') return true;
+    if (_wcsnicmp(p, L"rem", 3) == 0) {
+        wchar_t next = p[3];
+        if (next == L'\0' || next == L' ' || next == L'\t' || next == L'.' || next == L':' || next == L'/') {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool try_native_simple_set(const wchar_t *cmd_body) {
+    const wchar_t *p = skip_ws(cmd_body);
+    if (_wcsnicmp(p, L"set", 3) != 0 || (p[3] != L' ' && p[3] != L'\t')) return false;
+    p = skip_ws(p + 3);
+    /* Bail on /a, /p, %, |, &, <, > */
+    if (p[0] == L'/') return false;
+    for (const wchar_t *q = p; *q; q++) {
+        if (*q == L'%' || *q == L'|' || *q == L'&' || *q == L'<' || *q == L'>') return false;
+    }
+    const wchar_t *eq = wcschr(p, L'=');
+    if (!eq || eq == p) return false;
+    size_t nlen = (size_t)(eq - p);
+    if (nlen >= 256) return false;
+    wchar_t name[256];
+    memcpy(name, p, nlen * sizeof(wchar_t));
+    name[nlen] = L'\0';
+    const wchar_t *val = eq + 1;
+    return SetEnvironmentVariableW(name, val[0] ? val : NULL) != 0;
+}
+
 static wchar_t *expand_interactive_errorlevel(const wchar_t *line, int last_exit_code) {
     if (!line) return NULL;
     wchar_t dummy[8];
@@ -298,8 +384,19 @@ static wchar_t *expand_interactive_errorlevel(const wchar_t *line, int last_exit
 }
 
 static int exec_via_sync_bridge(shell_ctx_t *ctx, const wchar_t *line, bool is_batch_script) {
+    if (is_comment_line(skip_ws(line))) {
+        return ctx->last_exit_code;
+    }
+
     wchar_t *effective_line = expand_interactive_errorlevel(line, ctx->last_exit_code);
     const wchar_t *cmd_body = effective_line ? effective_line : line;
+
+    bool use_sync_tail = exec_is_safe_for_sync_tail(cmd_body);
+    if (!use_sync_tail && try_native_simple_set(cmd_body)) {
+        free(effective_line);
+        ctx->last_exit_code = 0;
+        return 0;
+    }
 
     wchar_t temp_dir[MAX_PATH];
     DWORD tlen = GetTempPathW(MAX_PATH, temp_dir);
@@ -318,8 +415,8 @@ static int exec_via_sync_bridge(shell_ctx_t *ctx, const wchar_t *line, bool is_b
     size_t flen = wcslen(sync_file);
 
     /*
-     * Empirically validated Phase 0 Sync Bridge template (/v:off + call ^%ERRORLEVEL^%):
-     * "<backend>" /d /q /c "<call_prefix><line>& call "<self>" --__sync-state "<sync_file>" ^%ERRORLEVEL^%"
+     * Use /s /c so cmd.exe unconditionally strips ONLY our exact outer wrapper quotes.
+     * Only append the --__sync-state tail when exec_is_safe_for_sync_tail(cmd_body) is true.
      */
     size_t cap = blen + llen + slen + flen + 128;
     wchar_t *cmdline = (wchar_t *)malloc(cap * sizeof(wchar_t));
@@ -329,9 +426,15 @@ static int exec_via_sync_bridge(shell_ctx_t *ctx, const wchar_t *line, bool is_b
         return 1;
     }
 
-    swprintf(cmdline, cap,
-             L"\"%ls\" /d /q /c \"%ls%ls& call \"%ls\" --__sync-state \"%ls\" ^%%ERRORLEVEL^%%\"",
-             ctx->backend_path, call_prefix, cmd_body, ctx->self_path, sync_file);
+    if (use_sync_tail) {
+        swprintf(cmdline, cap,
+                 L"\"%ls\" /d /q /s /c \"%ls%ls& call \"%ls\" --__sync-state \"%ls\" ^%%ERRORLEVEL^%%\"",
+                 ctx->backend_path, call_prefix, cmd_body, ctx->self_path, sync_file);
+    } else {
+        swprintf(cmdline, cap,
+                 L"\"%ls\" /d /q /s /c \"%ls%ls\"",
+                 ctx->backend_path, call_prefix, cmd_body);
+    }
     free(effective_line);
 
     STARTUPINFOW si;
@@ -357,16 +460,18 @@ static int exec_via_sync_bridge(shell_ctx_t *ctx, const wchar_t *line, bool is_b
     CloseHandle(pi.hThread);
     SetConsoleCtrlHandler(NULL, FALSE);
 
-    synced_state_t state;
-    if (state_sync_read_file(sync_file, &state)) {
-        state_sync_apply(&state);
-        ctx->last_exit_code = state.exit_code;
-        state_sync_free(&state);
-    } else {
+    if (use_sync_tail) {
+        synced_state_t state;
+        if (state_sync_read_file(sync_file, &state)) {
+            state_sync_apply(&state);
+            ctx->last_exit_code = state.exit_code;
+            state_sync_free(&state);
+            return ctx->last_exit_code;
+        }
         DeleteFileW(sync_file);
-        ctx->last_exit_code = (int)proc_ec;
     }
 
+    ctx->last_exit_code = (int)proc_ec;
     return ctx->last_exit_code;
 }
 
@@ -456,15 +561,14 @@ static bool try_exec_shell_builtin(shell_ctx_t *ctx, const wchar_t *p) {
     }
 
     if (_wcsnicmp(p, L"theme", 5) == 0 && (p[5] == L'\0' || p[5] == L' ' || p[5] == L'\t')) {
-        const wchar_t *arg = skip_ws(p + 5);
+        wchar_t arg[128];
+        wcsncpy(arg, skip_ws(p + 5), 127);
+        arg[127] = L'\0';
+        trim_trailing_ws(arg);
         if (!*arg) {
-            wprintf(L"%ls\n", cfg->theme == THEME_AGNOSTER ? L"agnoster" : L"robbyrussell");
-        } else if (_wcsicmp(arg, L"agnoster") == 0) {
-            cfg->theme = THEME_AGNOSTER;
-        } else if (_wcsicmp(arg, L"robbyrussell") == 0) {
-            cfg->theme = THEME_ROBBYRUSSELL;
-        } else {
-            fwprintf(stderr, L"Unknown theme: %ls (available: robbyrussell, agnoster)\n", arg);
+            wprintf(L"%ls\n", config_theme_name(cfg->theme));
+        } else if (!config_theme_from_name(arg, &cfg->theme)) {
+            fwprintf(stderr, L"Unknown theme: %ls (available: robbyrussell, agnoster, omb-box, pure, dracula, minimal)\n", arg);
             ctx->last_exit_code = 1;
             return true;
         }

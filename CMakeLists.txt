@@ -140,3 +140,14 @@ if(MSVC)
     target_link_options(test_tui_integration PRIVATE /SUBSYSTEM:CONSOLE)
 endif()
 add_test(NAME test_tui_integration COMMAND test_tui_integration)
+
+add_executable(test_exec_edge_cases tests/test_exec_edge_cases.c)
+target_include_directories(test_exec_edge_cases PRIVATE "${CMAKE_SOURCE_DIR}/tests")
+target_link_libraries(test_exec_edge_cases PRIVATE plumbus_core)
+target_compile_definitions(test_exec_edge_cases PRIVATE
+    PLUMBUS_EXE_PATH=L"$<TARGET_FILE:plumbus>"
+)
+if(MSVC)
+    target_link_options(test_exec_edge_cases PRIVATE /SUBSYSTEM:CONSOLE)
+endif()
+add_test(NAME test_exec_edge_cases COMMAND test_exec_edge_cases)

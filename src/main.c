@@ -46,7 +46,7 @@ static bool repl_open_config_cb(void *user_data,
         wchar_t *np = prompt_render(rc->cfg, rc->cwd, rc->last_exit_code, rc->cfg->git_status ? &g : NULL);
         if (np) {
             *new_prompt_ansi = np;
-            *new_prompt_vis_len = prompt_visible_width(np);
+            *new_prompt_vis_len = prompt_last_line_visible_width(np);
         }
         *out_enable_hl = rc->cfg->syntax_highlighting;
         *out_enable_ghost = rc->cfg->ghost_text;
@@ -74,7 +74,7 @@ static void run_tui_repl(shell_ctx_t *ctx, plumbus_config_t *cfg) {
 
         wchar_t *prompt = prompt_render(cfg, cwd, ctx->last_exit_code, cfg->git_status ? &git_st : NULL);
         const wchar_t *pstr = prompt ? prompt : L"> ";
-        size_t pvis = prompt_visible_width(pstr);
+        size_t pvis = prompt_last_line_visible_width(pstr);
 
         repl_cfg_ctx_t rctx = { cfg, cwd, ctx->last_exit_code, &git_st };
 

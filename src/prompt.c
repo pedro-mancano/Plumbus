@@ -25,6 +25,16 @@ static void abbreviate_home(const wchar_t *cwd, wchar_t *out, size_t out_cap) {
     out[out_cap - 1] = L'\0';
 }
 
+static void get_user_and_host(wchar_t *user, size_t user_cap, wchar_t *host, size_t host_cap) {
+    DWORD un = GetEnvironmentVariableW(L"USERNAME", user, (DWORD)user_cap);
+    if (un == 0 || un >= user_cap) wcsncpy(user, L"user", user_cap - 1);
+    user[user_cap - 1] = L'\0';
+
+    DWORD hn = GetEnvironmentVariableW(L"COMPUTERNAME", host, (DWORD)host_cap);
+    if (hn == 0 || hn >= host_cap) wcsncpy(host, L"windows", host_cap - 1);
+    host[host_cap - 1] = L'\0';
+}
+
 wchar_t *prompt_render(const plumbus_config_t *cfg,
                        const wchar_t *cwd,
                        int last_exit_code,
@@ -35,7 +45,7 @@ wchar_t *prompt_render(const plumbus_config_t *cfg,
     plumbus_theme_t theme = cfg ? cfg->theme : THEME_ROBBYRUSSELL;
     bool nf = cfg ? cfg->nerd_fonts : true;
 
-    size_t cap = wcslen(short_path) + 512;
+    size_t cap = wcslen(short_path) + 1024;
     wchar_t *out = (wchar_t *)malloc(cap * sizeof(wchar_t));
     if (!out) return NULL;
     out[0] = L'\0';
@@ -67,6 +77,92 @@ wchar_t *prompt_render(const plumbus_config_t *cfg,
             wchar_t end_seg[64];
             swprintf(end_seg, 64, L"\x1b[0m\x1b[38;2;40;100;200m%ls\x1b[0m ", sep);
             wcscat(out, end_seg);
+        }
+        return out;
+    }
+
+    if (theme == THEME_OMB_BOX) {
+        wchar_t user[128], host[128];
+        get_user_and_host(user, 128, host, 128);
+        const wchar_t *dollar_col = (last_exit_code == 0) ? L"\x1b[1;38;2;248;248;242m" : L"\x1b[1;38;2;255;85;85m";
+        if (git && git->in_repo) {
+            const wchar_t *mark = git->is_dirty
+                ? L"\x1b[38;2;241;250;140m\u2717"
+                : L"\x1b[38;2;80;250;123m\u2714";
+            swprintf(out, cap,
+                     L"\x1b[1;38;2;248;248;242m\u250F\u2501\u2501\x1b[1;38;2;255;121;198m%ls"
+                     L"\x1b[0;38;2;248;248;242m at \x1b[38;2;255;184;108m%ls"
+                     L"\x1b[38;2;248;248;242m in \x1b[38;2;80;250;123m%ls"
+                     L"\x1b[38;2;248;248;242m on \x1b[38;2;189;147;249m%ls %ls\x1b[0m\n"
+                     L"\x1b[1;38;2;248;248;242m\u2517\u2501%ls$ \x1b[0m",
+                     user, host, short_path, git->branch, mark, dollar_col);
+        } else {
+            swprintf(out, cap,
+                     L"\x1b[1;38;2;248;248;242m\u250F\u2501\u2501\x1b[1;38;2;255;121;198m%ls"
+                     L"\x1b[0;38;2;248;248;242m at \x1b[38;2;255;184;108m%ls"
+                     L"\x1b[38;2;248;248;242m in \x1b[38;2;80;250;123m%ls\x1b[0m\n"
+                     L"\x1b[1;38;2;248;248;242m\u2517\u2501%ls$ \x1b[0m",
+                     user, host, short_path, dollar_col);
+        }
+        return out;
+    }
+
+    if (theme == THEME_PURE) {
+        const wchar_t *sym = nf ? L"\u276F" : L">"; /* ❯ */
+        const wchar_t *sym_col = (last_exit_code == 0) ? L"\x1b[38;2;255;121;198m" : L"\x1b[38;2;255;85;85m";
+        if (git && git->in_repo) {
+            const wchar_t *mark = git->is_dirty
+                ? L"\x1b[38;2;241;250;140m\u2717"
+                : L"\x1b[38;2;80;250;123m\u2714";
+            swprintf(out, cap,
+                     L"\x1b[38;2;139;233;253m%ls \x1b[38;2;189;147;249m%ls %ls\x1b[0m\n%ls%ls \x1b[0m",
+                     short_path, git->branch, mark, sym_col, sym);
+        } else {
+            swprintf(out, cap,
+                     L"\x1b[38;2;139;233;253m%ls\x1b[0m\n%ls%ls \x1b[0m",
+                     short_path, sym_col, sym);
+        }
+        return out;
+    }
+
+    if (theme == THEME_DRACULA) {
+        wchar_t user[128], host[128];
+        get_user_and_host(user, 128, host, 128);
+        const wchar_t *sym = nf ? L"\u276F" : L">";
+        const wchar_t *sym_col = (last_exit_code == 0) ? L"\x1b[38;2;80;250;123m" : L"\x1b[38;2;255;85;85m";
+        if (git && git->in_repo) {
+            const wchar_t *mark = git->is_dirty
+                ? L"\x1b[38;2;241;250;140m\u2717"
+                : L"\x1b[38;2;80;250;123m\u2714";
+            swprintf(out, cap,
+                     L"\x1b[38;2;189;147;249m\u256D\u2500 \x1b[38;2;255;121;198m%ls@%ls"
+                     L"  \x1b[38;2;139;233;253m%ls  \x1b[38;2;189;147;249m(\x1b[38;2;241;250;140m%ls %ls\x1b[38;2;189;147;249m)\x1b[0m\n"
+                     L"\x1b[38;2;189;147;249m\u2570\u2500%ls%ls \x1b[0m",
+                     user, host, short_path, git->branch, mark, sym_col, sym);
+        } else {
+            swprintf(out, cap,
+                     L"\x1b[38;2;189;147;249m\u256D\u2500 \x1b[38;2;255;121;198m%ls@%ls"
+                     L"  \x1b[38;2;139;233;253m%ls\x1b[0m\n"
+                     L"\x1b[38;2;189;147;249m\u2570\u2500%ls%ls \x1b[0m",
+                     user, host, short_path, sym_col, sym);
+        }
+        return out;
+    }
+
+    if (theme == THEME_MINIMAL) {
+        const wchar_t *sym = nf ? L"\u203A" : L">"; /* › */
+        const wchar_t *sym_col = (last_exit_code == 0) ? L"\x1b[38;2;80;250;123m" : L"\x1b[38;2;255;85;85m";
+        if (git && git->in_repo) {
+            const wchar_t *mark = git->is_dirty
+                ? L"\x1b[38;2;241;250;140m\u2717"
+                : L"\x1b[38;2;80;250;123m\u2714";
+            swprintf(out, cap,
+                     L"\x1b[38;2;139;233;253m%ls \x1b[38;2;98;114;164m[\x1b[38;2;189;147;249m%ls %ls\x1b[38;2;98;114;164m] %ls%ls\x1b[0m ",
+                     short_path, git->branch, mark, sym_col, sym);
+        } else {
+            swprintf(out, cap,
+                     L"\x1b[38;2;139;233;253m%ls %ls%ls\x1b[0m ",
+                     short_path, sym_col, sym);
         }
         return out;
     }
@@ -105,4 +201,10 @@ size_t prompt_visible_width(const wchar_t *ansi_str) {
         p++;
     }
     return w;
+}
+
+size_t prompt_last_line_visible_width(const wchar_t *ansi_str) {
+    if (!ansi_str) return 0;
+    const wchar_t *nl = wcsrchr(ansi_str, L'\n');
+    return prompt_visible_width(nl ? (nl + 1) : ansi_str);
 }
