@@ -30,6 +30,7 @@ add_library(plumbus_core STATIC
     src/builtins_fs.c
     src/builtins_env.c
     src/builtins_sys.c
+    src/cmd_msg.c
     src/cmd_runtime.c
     src/console.c
     src/history.c

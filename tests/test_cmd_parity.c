@@ -32,7 +32,7 @@ static void rmdir_tree_w(const wchar_t *path) {
     RemoveDirectoryW(path);
 }
 
-static void write_bat_w(const wchar_t *path, const char *content) {
+static void write_file_w(const wchar_t *path, const char *content) {
     HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h != INVALID_HANDLE_VALUE) {
         DWORD w = 0;
@@ -57,13 +57,29 @@ static const wchar_t *get_ref_cmd_path(void) {
     return L"C:\\Windows\\System32\\cmd.exe";
 }
 
+static void drain_pipe(HANDLE h, char *buf, size_t cap, size_t *tot) {
+    DWORD avail = 0;
+    while (PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL) && avail > 0) {
+        if (*tot + 1 >= cap) break;
+        DWORD to_read = avail;
+        if (to_read > (DWORD)(cap - 1 - *tot)) to_read = (DWORD)(cap - 1 - *tot);
+        DWORD rd = 0;
+        if (!ReadFile(h, buf + *tot, to_read, &rd, NULL) || rd == 0) break;
+        *tot += rd;
+    }
+}
+
 static int run_exe_raw(const wchar_t *exe_path, const wchar_t *args, const wchar_t *cwd,
-                       char *out_buf, size_t out_cap) {
+                       char *out_buf, size_t out_cap, char *err_buf, size_t err_cap) {
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
-    HANDLE r = NULL, w = NULL, in_r = NULL, in_w = NULL;
-    if (!CreatePipe(&r, &w, &sa, 0)) return -1;
-    if (!CreatePipe(&in_r, &in_w, &sa, 0)) { CloseHandle(r); CloseHandle(w); return -1; }
-    SetHandleInformation(r, HANDLE_FLAG_INHERIT, 0);
+    HANDLE out_r = NULL, out_w = NULL, err_r = NULL, err_w = NULL, in_r = NULL, in_w = NULL;
+    if (!CreatePipe(&out_r, &out_w, &sa, 0)) return -1;
+    if (!CreatePipe(&err_r, &err_w, &sa, 0)) { CloseHandle(out_r); CloseHandle(out_w); return -1; }
+    if (!CreatePipe(&in_r, &in_w, &sa, 0)) {
+        CloseHandle(out_r); CloseHandle(out_w); CloseHandle(err_r); CloseHandle(err_w); return -1;
+    }
+    SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, 0);
     CloseHandle(in_w);
 
@@ -74,42 +90,32 @@ static int run_exe_raw(const wchar_t *exe_path, const wchar_t *args, const wchar
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdInput = in_r;
-    si.hStdOutput = w;
-    si.hStdError = w;
+    si.hStdOutput = out_w;
+    si.hStdError = err_w;
 
     wchar_t cmdline[8192];
     swprintf(cmdline, 8192, L"\"%ls\" %ls", exe_path, args);
 
     BOOL ok = CreateProcessW(exe_path, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, cwd, &si, &pi);
-    CloseHandle(w);
+    CloseHandle(out_w);
+    CloseHandle(err_w);
     CloseHandle(in_r);
     if (!ok) {
-        CloseHandle(r);
+        CloseHandle(out_r);
+        CloseHandle(err_r);
         return -1;
     }
 
-    size_t tot = 0;
+    size_t tot_out = 0, tot_err = 0;
     ULONGLONG start = GetTickCount64();
     bool timed_out = false;
     for (;;) {
-        DWORD avail = 0;
-        while (PeekNamedPipe(r, NULL, 0, NULL, &avail, NULL) && avail > 0) {
-            if (tot + 1 >= out_cap) break;
-            DWORD to_read = avail;
-            if (to_read > (DWORD)(out_cap - 1 - tot)) to_read = (DWORD)(out_cap - 1 - tot);
-            DWORD rd = 0;
-            if (!ReadFile(r, out_buf + tot, to_read, &rd, NULL) || rd == 0) break;
-            tot += rd;
-        }
+        drain_pipe(out_r, out_buf, out_cap, &tot_out);
+        drain_pipe(err_r, err_buf, err_cap, &tot_err);
         DWORD wrc = WaitForSingleObject(pi.hProcess, 10);
         if (wrc == WAIT_OBJECT_0) {
-            while (PeekNamedPipe(r, NULL, 0, NULL, &avail, NULL) && avail > 0 && tot + 1 < out_cap) {
-                DWORD to_read = avail;
-                if (to_read > (DWORD)(out_cap - 1 - tot)) to_read = (DWORD)(out_cap - 1 - tot);
-                DWORD rd = 0;
-                if (!ReadFile(r, out_buf + tot, to_read, &rd, NULL) || rd == 0) break;
-                tot += rd;
-            }
+            drain_pipe(out_r, out_buf, out_cap, &tot_out);
+            drain_pipe(err_r, err_buf, err_cap, &tot_err);
             break;
         }
         if (GetTickCount64() - start >= 3000) {
@@ -118,8 +124,10 @@ static int run_exe_raw(const wchar_t *exe_path, const wchar_t *args, const wchar
             break;
         }
     }
-    out_buf[tot] = '\0';
-    CloseHandle(r);
+    out_buf[tot_out] = '\0';
+    err_buf[tot_err] = '\0';
+    CloseHandle(out_r);
+    CloseHandle(err_r);
 
     if (timed_out) {
         CloseHandle(pi.hProcess);
@@ -133,22 +141,48 @@ static int run_exe_raw(const wchar_t *exe_path, const wchar_t *args, const wchar
     return (int)ec;
 }
 
-static void normalize_dir_utf8(char *buf, const wchar_t *dir_w) {
-    char dir_u8[MAX_PATH * 2];
-    int n = WideCharToMultiByte(CP_UTF8, 0, dir_w, -1, dir_u8, sizeof(dir_u8), NULL, NULL);
-    if (n <= 1) return;
-    size_t dlen = strlen(dir_u8);
-    char *p = buf;
-    while ((p = strstr(p, dir_u8)) != NULL) {
-        const char *tag = "<DIR>";
+static void decode_and_normalize_w(const char *raw, UINT cp, bool roundtrip_oem, const wchar_t *dir_w, wchar_t *wout, size_t wcap) {
+    wout[0] = L'\0';
+    if (!raw || !*raw) return;
+    int n = MultiByteToWideChar(cp, 0, raw, -1, wout, (int)wcap);
+    if (n <= 0) {
+        MultiByteToWideChar(CP_ACP, 0, raw, -1, wout, (int)wcap);
+    }
+    wout[wcap - 1] = L'\0';
+    if (roundtrip_oem) {
+        UINT ocp = GetOEMCP();
+        char tmp[16384];
+        int mn = WideCharToMultiByte(ocp, 0, wout, -1, tmp, sizeof(tmp), NULL, NULL);
+        if (mn > 0) {
+            MultiByteToWideChar(ocp, 0, tmp, -1, wout, (int)wcap);
+            wout[wcap - 1] = L'\0';
+        }
+    }
+    size_t dlen = wcslen(dir_w);
+    if (dlen == 0) return;
+    wchar_t *p = wout;
+    while ((p = wcsstr(p, dir_w)) != NULL) {
+        const wchar_t *tag = L"<DIR>";
         size_t tlen = 5;
-        memmove(p + tlen, p + dlen, strlen(p + dlen) + 1);
-        memcpy(p, tag, tlen);
+        memmove(p + tlen, p + dlen, (wcslen(p + dlen) + 1) * sizeof(wchar_t));
+        memcpy(p, tag, tlen * sizeof(wchar_t));
         p += tlen;
     }
 }
 
-static bool assert_parity_case(const char *name, const wchar_t *args, const char *bat_content) {
+static void seed_error_fixtures(const wchar_t *dir) {
+    wchar_t p[MAX_PATH];
+    swprintf(p, MAX_PATH, L"%ls\\exist.txt", dir);
+    write_file_w(p, "hello\r\n");
+    swprintf(p, MAX_PATH, L"%ls\\emptydir", dir);
+    ensure_dir_w(p);
+    swprintf(p, MAX_PATH, L"%ls\\nonempty", dir);
+    ensure_dir_w(p);
+    swprintf(p, MAX_PATH, L"%ls\\nonempty\\f.txt", dir);
+    write_file_w(p, "x");
+}
+
+static bool assert_parity_ex(const char *name, const wchar_t *args, const char *bat_content, bool with_fixtures) {
     wchar_t root[MAX_PATH];
     swprintf(root, MAX_PATH, L"%ls\\parity", PLUMBUS_TEST_SANDBOX_DIR);
     ensure_dir_w(PLUMBUS_TEST_SANDBOX_DIR);
@@ -165,33 +199,47 @@ static bool assert_parity_case(const char *name, const wchar_t *args, const char
     ensure_dir_w(d_cmd);
     ensure_dir_w(d_plu);
 
+    if (with_fixtures) {
+        seed_error_fixtures(d_cmd);
+        seed_error_fixtures(d_plu);
+    }
+
     if (bat_content) {
         wchar_t b1[MAX_PATH], b2[MAX_PATH];
         swprintf(b1, MAX_PATH, L"%ls\\test.bat", d_cmd);
         swprintf(b2, MAX_PATH, L"%ls\\test.bat", d_plu);
-        write_bat_w(b1, bat_content);
-        write_bat_w(b2, bat_content);
+        write_file_w(b1, bat_content);
+        write_file_w(b2, bat_content);
     }
 
-    char out1[16384], out2[16384];
-    int rc1 = run_exe_raw(get_ref_cmd_path(), args, d_cmd, out1, sizeof(out1));
-    int rc2 = run_exe_raw(PLUMBUS_EXE_PATH, args, d_plu, out2, sizeof(out2));
-    normalize_dir_utf8(out1, d_cmd);
-    normalize_dir_utf8(out2, d_plu);
+    char raw_o1[16384], raw_e1[16384], raw_o2[16384], raw_e2[16384];
+    int rc1 = run_exe_raw(get_ref_cmd_path(), args, d_cmd, raw_o1, sizeof(raw_o1), raw_e1, sizeof(raw_e1));
+    int rc2 = run_exe_raw(PLUMBUS_EXE_PATH, args, d_plu, raw_o2, sizeof(raw_o2), raw_e2, sizeof(raw_e2));
+
+    wchar_t wo1[16384], we1[16384], wo2[16384], we2[16384];
+    UINT oem_cp = GetOEMCP();
+    decode_and_normalize_w(raw_o1, oem_cp, false, d_cmd, wo1, 16384);
+    decode_and_normalize_w(raw_e1, oem_cp, false, d_cmd, we1, 16384);
+    decode_and_normalize_w(raw_o2, CP_UTF8, true, d_plu, wo2, 16384);
+    decode_and_normalize_w(raw_e2, CP_UTF8, true, d_plu, we2, 16384);
 
     rmdir_tree_w(d_cmd);
     rmdir_tree_w(d_plu);
 
-    if (rc1 != rc2 || strcmp(out1, out2) != 0) {
-        fprintf(stderr, "  PARITY DIFF [%s]: rc cmd=%d plu=%d\n  CMD: [%s]\n  PLU: [%s]\n",
-                name, rc1, rc2, out1, out2);
+    if (rc1 != rc2 || wcscmp(wo1, wo2) != 0 || wcscmp(we1, we2) != 0) {
+        fwprintf(stderr,
+                 L"  PARITY DIFF [%S]: rc cmd=%d plu=%d\n"
+                 L"  CMD out: [%ls]\n  PLU out: [%ls]\n"
+                 L"  CMD err: [%ls]\n  PLU err: [%ls]\n",
+                 name, rc1, rc2, wo1, wo2, we1, we2);
         fflush(stderr);
         return false;
     }
     return true;
 }
 
-#define PARITY_CHECK(name, args, bat) ASSERT_TRUE(assert_parity_case(name, args, bat))
+#define PARITY_CHECK(name, args, bat) ASSERT_TRUE(assert_parity_ex(name, args, bat, false))
+#define PARITY_ERR(name, args, bat)   ASSERT_TRUE(assert_parity_ex(name, args, bat, true))
 
 TEST_CASE(test_parity_echo_and_quotes) {
     PARITY_CHECK("echo_basic", L"/d /c echo hello world", NULL);
@@ -205,6 +253,8 @@ TEST_CASE(test_parity_echo_and_quotes) {
     PARITY_CHECK("echo_double_caret", L"/d /c echo hi^^", NULL);
     PARITY_CHECK("echo_quoted_amp", L"/d /c echo \"a & b\"", NULL);
     PARITY_CHECK("echo_tab", L"/d /c echo\thello", NULL);
+    PARITY_CHECK("echo_status_off", L"/d /c echo off & echo", NULL);
+    PARITY_CHECK("echo_status_on", L"/d /c echo on & echo", NULL);
 }
 
 TEST_CASE(test_parity_ops_redirs_pipes) {
@@ -360,10 +410,144 @@ TEST_CASE(test_parity_full_batch_scripts) {
         "exit /b 0\r\n");
 }
 
+/* --- Error Parity Suites (4+ errors per command: syntax, exit code, stdout, stderr) --- */
+
+TEST_CASE(test_parity_errors_cd_pushd_drive) {
+    PARITY_ERR("cd_missing_dir", L"/d /c cd dajdslkadjka", NULL);
+    PARITY_ERR("cd_file_not_dir", L"/d /c cd exist.txt", NULL);
+    PARITY_ERR("cd_bad_switch", L"/d /c cd /z foo", NULL);
+    PARITY_ERR("cd_bad_drive", L"/d /c cd Z:\\no_drive", NULL);
+
+    PARITY_ERR("pushd_missing", L"/d /c pushd dajdslkadjka", NULL);
+    PARITY_ERR("pushd_file", L"/d /c pushd exist.txt", NULL);
+    PARITY_ERR("pushd_bad_drive", L"/d /c pushd Z:\\no_drive", NULL);
+    PARITY_ERR("popd_empty", L"/d /c popd", NULL);
+
+    PARITY_ERR("drive_switch_bad", L"/d /c Z:", NULL);
+}
+
+TEST_CASE(test_parity_errors_dir_type_del) {
+    PARITY_ERR("dir_missing_file", L"/d /c dir kkds.", NULL);
+    PARITY_ERR("dir_bad_switch", L"/d /c dir /z", NULL);
+    PARITY_ERR("dir_missing_parent", L"/d /c dir dajdslkadjka\\foo", NULL);
+    PARITY_ERR("dir_bad_drive", L"/d /c dir Z:\\", NULL);
+
+    PARITY_ERR("type_no_args", L"/d /c type", NULL);
+    PARITY_ERR("type_missing", L"/d /c type nao_existe.txt", NULL);
+    PARITY_ERR("type_dir", L"/d /c type emptydir", NULL);
+    PARITY_ERR("type_bad_switch", L"/d /c type /z exist.txt", NULL);
+
+    PARITY_ERR("del_no_args", L"/d /c del", NULL);
+    PARITY_ERR("del_missing_rc0", L"/d /c del nao_existe.txt", NULL);
+    PARITY_ERR("del_bad_switch", L"/d /c del /z exist.txt", NULL);
+    PARITY_ERR("del_missing_parent", L"/d /c del dajdslkadjka\\*.txt", NULL);
+}
+
+TEST_CASE(test_parity_errors_copy_move_ren) {
+    PARITY_ERR("copy_no_args", L"/d /c copy", NULL);
+    PARITY_ERR("copy_missing", L"/d /c copy nao_existe.txt dst.txt", NULL);
+    PARITY_ERR("copy_self", L"/d /c copy exist.txt exist.txt", NULL);
+    PARITY_ERR("copy_bad_switch", L"/d /c copy /q exist.txt dst.txt", NULL);
+
+    PARITY_ERR("move_no_args", L"/d /c move", NULL);
+    PARITY_ERR("move_one_arg_dot", L"/d /c move exist.txt", NULL);
+    PARITY_ERR("move_missing", L"/d /c move nao_existe.txt dst.txt", NULL);
+    PARITY_ERR("move_bad_switch", L"/d /c move /z exist.txt dst.txt", NULL);
+    PARITY_ERR("move_bad_drive", L"/d /c move exist.txt Z:\\no\\dst.txt", NULL);
+
+    PARITY_ERR("ren_no_args", L"/d /c ren", NULL);
+    PARITY_ERR("ren_one_arg", L"/d /c ren exist.txt", NULL);
+    PARITY_ERR("ren_missing", L"/d /c ren nao_existe.txt b.txt", NULL);
+    PARITY_ERR("ren_dst_slash", L"/d /c ren exist.txt a\\b.txt", NULL);
+    PARITY_ERR("ren_dup", L"/d /c echo y>b.txt & ren exist.txt b.txt", NULL);
+}
+
+TEST_CASE(test_parity_errors_md_rd_mklink) {
+    PARITY_ERR("mkdir_no_args", L"/d /c mkdir", NULL);
+    PARITY_ERR("mkdir_exists_dir", L"/d /c mkdir emptydir", NULL);
+    PARITY_ERR("mkdir_exists_file", L"/d /c mkdir exist.txt", NULL);
+    PARITY_ERR("mkdir_bad_drive", L"/d /c mkdir Z:\\no_drive\\x", NULL);
+
+    PARITY_ERR("rmdir_no_args", L"/d /c rmdir", NULL);
+    PARITY_ERR("rmdir_missing", L"/d /c rmdir nao_existe_dir", NULL);
+    PARITY_ERR("rmdir_nonempty", L"/d /c rmdir nonempty", NULL);
+    PARITY_ERR("rmdir_file", L"/d /c rmdir exist.txt", NULL);
+
+    PARITY_ERR("mklink_no_args", L"/d /c mklink", NULL);
+    PARITY_ERR("mklink_one_arg", L"/d /c mklink a", NULL);
+    PARITY_ERR("mklink_bad_switch", L"/d /c mklink /z a b", NULL);
+    PARITY_ERR("mklink_exists", L"/d /c mklink /h exist.txt nonempty\\f.txt", NULL);
+}
+
+TEST_CASE(test_parity_errors_set_and_arith) {
+    PARITY_ERR("set_undef_prefix", L"/d /c set NAO_EXISTE_XYZ_999", NULL);
+    PARITY_ERR("set_empty_lhs", L"/d /c set =abc", NULL);
+    PARITY_ERR("set_a_empty", L"/d /c set /a", NULL);
+    PARITY_ERR("set_p_empty", L"/d /c set /p", NULL);
+
+    PARITY_ERR("set_a_div_zero", L"/d /c set /a 1/0", NULL);
+    PARITY_ERR("set_a_mod_zero", L"/d /c set /a 1%0", NULL);
+    PARITY_ERR("set_a_missing_operand", L"/d /c set /a +++", NULL);
+    PARITY_ERR("set_a_missing_operator", L"/d /c set /a 1 2", NULL);
+    PARITY_ERR("set_a_unbalanced_paren", L"/d /c set /a (1+2", NULL);
+    PARITY_ERR("set_a_bad_octal", L"/d /c set /a 08", NULL);
+}
+
+TEST_CASE(test_parity_errors_sys_builtins) {
+    PARITY_ERR("verify_bad_parm", L"/d /c verify abc", NULL);
+    PARITY_ERR("verify_bad_switch", L"/d /c verify /z", NULL);
+    PARITY_ERR("verify_extra_arg", L"/d /c verify on extra", NULL);
+    PARITY_ERR("verify_status", L"/d /c verify", NULL);
+
+    PARITY_ERR("color_same_fg_bg", L"/d /c color 00", NULL);
+    PARITY_ERR("color_bad_hex", L"/d /c color zz", NULL);
+    PARITY_ERR("color_too_long", L"/d /c color 123", NULL);
+    PARITY_ERR("color_same_ff", L"/d /c color ff", NULL);
+
+    PARITY_ERR("vol_bad_drive", L"/d /c vol Z:", NULL);
+    PARITY_ERR("vol_bad_arg", L"/d /c vol C:\\foo", NULL);
+    PARITY_ERR("assoc_missing", L"/d /c assoc .nao_existe_xyz_999", NULL);
+    PARITY_ERR("ftype_missing", L"/d /c ftype nao_existe_xyz_999", NULL);
+}
+
+TEST_CASE(test_parity_errors_control_and_syntax) {
+    PARITY_ERR("if_empty", L"/d /c if", NULL);
+    PARITY_ERR("if_exist_no_cmd", L"/d /c if exist", NULL);
+    PARITY_ERR("if_eq_no_cmd", L"/d /c if 1==1", NULL);
+    PARITY_ERR("if_not_no_cmd", L"/d /c if not", NULL);
+
+    PARITY_ERR("for_empty", L"/d /c for", NULL);
+    PARITY_ERR("for_no_do", L"/d /c for %i in (1)", NULL);
+    PARITY_ERR("for_bad_switch", L"/d /c for /z %i in (1) do echo 1", NULL);
+    PARITY_ERR("for_bad_var", L"/d /c for % in (1) do @echo 1", NULL);
+
+    PARITY_ERR("syntax_unclosed_paren", L"/d /c (echo unclosed", NULL);
+    PARITY_ERR("syntax_dangling_pipe", L"/d /c echo a |", NULL);
+    PARITY_ERR("syntax_dangling_and", L"/d /c echo a &&", NULL);
+    PARITY_ERR("syntax_dangling_redir", L"/d /c echo >", NULL);
+    PARITY_ERR("redir_missing_in", L"/d /c echo a < nao_existe.txt", NULL);
+
+    PARITY_ERR("unknown_cmd", L"/d /c comando_inexistente_xyz_999", NULL);
+    PARITY_ERR("call_label_outside_bat", L"/d /c call :sub", NULL);
+
+    PARITY_ERR("bat_err_goto_nolabel", L"/d /c test.bat", "@echo off\r\ngoto\r\n");
+    PARITY_ERR("bat_err_goto_missing", L"/d /c test.bat", "@echo off\r\ngoto :nao_existe\r\n");
+    PARITY_ERR("bat_err_call_missing", L"/d /c test.bat", "@echo off\r\ncall :nao_existe\r\n");
+    PARITY_ERR("bat_err_shift_bad", L"/d /c test.bat", "@echo off\r\nshift /9\r\n");
+    PARITY_ERR("bat_err_setlocal_bad", L"/d /c test.bat", "@echo off\r\nsetlocal invalido\r\n");
+}
+
 int wmain(void) {
     RUN_TEST(test_parity_echo_and_quotes);
     RUN_TEST(test_parity_ops_redirs_pipes);
     RUN_TEST(test_parity_set_vars_and_if_for);
     RUN_TEST(test_parity_full_batch_scripts);
+    RUN_TEST(test_parity_errors_cd_pushd_drive);
+    RUN_TEST(test_parity_errors_dir_type_del);
+    RUN_TEST(test_parity_errors_copy_move_ren);
+    RUN_TEST(test_parity_errors_md_rd_mklink);
+    RUN_TEST(test_parity_errors_set_and_arith);
+    RUN_TEST(test_parity_errors_sys_builtins);
+    RUN_TEST(test_parity_errors_control_and_syntax);
     TEST_SUMMARY();
 }

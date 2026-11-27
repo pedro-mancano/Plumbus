@@ -92,7 +92,7 @@ TEST_CASE(test_builtins_sys_info) {
     ASSERT_TRUE(strstr(out, "Windows") != NULL);
 
     ASSERT_EQ_INT(0, run_cap(&ctx, L"vol", out, sizeof(out)));
-    ASSERT_TRUE(strstr(out, "Serial Number") != NULL);
+    ASSERT_TRUE(strchr(out, '-') != NULL);
 
     ASSERT_EQ_INT(0, run_cap(&ctx, L"date /t", out, sizeof(out)));
     ASSERT_TRUE(strlen(out) > 2);

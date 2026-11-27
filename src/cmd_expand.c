@@ -526,7 +526,7 @@ wchar_t *cmd_expand_for_vars(const shell_ctx_t *ctx, const wchar_t *text) {
                 mods[mi++] = *q++;
             }
             mods[mi] = L'\0';
-            if (iswalpha(*q)) {
+            if (iswalnum(*q)) {
                 const wchar_t *fv = lookup_for_var(ctx, *q);
                 if (fv) {
                     wchar_t *expanded = cmd_apply_tilde_mods(fv, mods);
@@ -538,7 +538,7 @@ wchar_t *cmd_expand_for_vars(const shell_ctx_t *ctx, const wchar_t *text) {
                     continue;
                 }
             }
-        } else if (iswalpha(p[1])) {
+        } else if (iswalnum(p[1])) {
             const wchar_t *fv = lookup_for_var(ctx, p[1]);
             if (fv) {
                 wbuf_append(&out, fv);

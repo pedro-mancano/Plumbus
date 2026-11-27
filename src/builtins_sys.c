@@ -1,4 +1,5 @@
 #include "builtins.h"
+#include "cmd_msg.h"
 #include "resolver.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,7 +8,11 @@
 
 int builtin_echo(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     if (!tail || !*tail) {
-        cmd_io_printf(io->h_out, L"ECHO is %ls.\r\n", (ctx && ctx->echo_off) ? L"off" : L"on");
+        if (ctx && ctx->echo_off) {
+            cmd_msg_print(io->h_out, CMD_MSG_ECHO_OFF, L"ECHO is off.\r\n", NULL, NULL);
+        } else {
+            cmd_msg_print(io->h_out, CMD_MSG_ECHO_ON, L"ECHO is on.\r\n", NULL, NULL);
+        }
         return 0;
     }
     wchar_t first = tail[0];
@@ -19,13 +24,20 @@ int builtin_echo(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     }
 
     const wchar_t *trimmed = cmd_skip_ws(tail);
-    if (_wcsicmp(trimmed, L"on") == 0) {
-        if (ctx) ctx->echo_off = false;
-        return 0;
-    }
-    if (_wcsicmp(trimmed, L"off") == 0) {
-        if (ctx) ctx->echo_off = true;
-        return 0;
+    wchar_t kw[16];
+    size_t klen = wcslen(trimmed);
+    while (klen > 0 && (trimmed[klen - 1] == L' ' || trimmed[klen - 1] == L'\t')) klen--;
+    if (klen > 0 && klen < 16) {
+        memcpy(kw, trimmed, klen * sizeof(wchar_t));
+        kw[klen] = L'\0';
+        if (_wcsicmp(kw, L"on") == 0) {
+            if (ctx) ctx->echo_off = false;
+            return 0;
+        }
+        if (_wcsicmp(kw, L"off") == 0) {
+            if (ctx) ctx->echo_off = true;
+            return 0;
+        }
     }
 
     const wchar_t *msg = (tail[0] == L' ' || tail[0] == L'\t') ? (tail + 1) : tail;
@@ -79,15 +91,25 @@ int builtin_color(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     WORD attr = 0x07;
     if (arg[0]) {
         size_t len = wcslen(arg);
-        if (len > 2) return 1;
+        if (len > 2) {
+            cmd_msg_print(io->h_out, CMD_MSG_COLOR_HELP, L"Sets the default console foreground and background colors.\r\n", NULL, NULL);
+            return 0;
+        }
         if (len == 1) {
             int fg = hex_val(arg[0]);
-            if (fg < 0) return 1;
+            if (fg < 0) {
+                cmd_msg_print(io->h_out, CMD_MSG_COLOR_HELP, L"Sets the default console foreground and background colors.\r\n", NULL, NULL);
+                return 0;
+            }
             attr = (WORD)fg;
         } else {
             int bg = hex_val(arg[0]);
             int fg = hex_val(arg[1]);
-            if (bg < 0 || fg < 0 || bg == fg) return 1;
+            if (bg < 0 || fg < 0) {
+                cmd_msg_print(io->h_out, CMD_MSG_COLOR_HELP, L"Sets the default console foreground and background colors.\r\n", NULL, NULL);
+                return 0;
+            }
+            if (bg == fg) return 1;
             attr = (WORD)((bg << 4) | fg);
         }
     }
@@ -127,29 +149,47 @@ int builtin_ver(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
 
 int builtin_vol(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     (void)ctx;
+    int argc = 0;
+    wchar_t **argv = NULL;
+    if (!cmd_parse_args(tail, &argc, &argv)) return 1;
+    if (argc > 1) {
+        cmd_free_args(argc, argv);
+        cmd_msg_print(io->h_err, CMD_MSG_SYNTAX_ERR, L"The syntax of the command is incorrect.\r\n", NULL, NULL);
+        return 1;
+    }
     wchar_t root[8] = L"C:\\";
-    const wchar_t *p = cmd_skip_ws(tail);
-    if (iswalpha(p[0]) && p[1] == L':') {
-        root[0] = towupper(p[0]);
+    if (argc == 1) {
+        if (iswalpha(argv[0][0]) && argv[0][1] == L':' && argv[0][2] == L'\0') {
+            root[0] = towupper(argv[0][0]);
+        } else {
+            cmd_free_args(argc, argv);
+            cmd_io_write_sz(io->h_out, L"\r\n");
+            cmd_msg_win32(io->h_err, ERROR_INVALID_DRIVE);
+            return 1;
+        }
     } else {
         wchar_t cwd[MAX_PATH];
         if (GetCurrentDirectoryW(MAX_PATH, cwd) >= 2 && cwd[1] == L':') {
             root[0] = towupper(cwd[0]);
         }
     }
+    cmd_free_args(argc, argv);
     wchar_t label[MAX_PATH] = { 0 };
     DWORD serial = 0;
     if (!GetVolumeInformationW(root, label, MAX_PATH, &serial, NULL, NULL, NULL, 0)) {
-        cmd_io_write_sz(io->h_err, L"The system cannot find the drive specified.\r\n");
+        cmd_io_write_sz(io->h_out, L"\r\n");
+        cmd_msg_win32(io->h_err, ERROR_PATH_NOT_FOUND);
         return 1;
     }
+    wchar_t drv[2] = { root[0], L'\0' };
     if (label[0]) {
-        cmd_io_printf(io->h_out, L" Volume in drive %lc is %ls\r\n", root[0], label);
+        cmd_msg_print(io->h_out, CMD_MSG_VOL_LABEL, L" Volume in drive %1 is %2\r\n", drv, label);
     } else {
-        cmd_io_printf(io->h_out, L" Volume in drive %lc has no label.\r\n", root[0]);
+        cmd_msg_print(io->h_out, CMD_MSG_VOL_NO_LABEL, L" Volume in drive %1 has no label.\r\n", drv, NULL);
     }
-    cmd_io_printf(io->h_out, L" Volume Serial Number is %04X-%04X\r\n",
-                  (unsigned)((serial >> 16) & 0xFFFFu), (unsigned)(serial & 0xFFFFu));
+    wchar_t ser[32];
+    swprintf(ser, 32, L"%04X-%04X", (unsigned)((serial >> 16) & 0xFFFFu), (unsigned)(serial & 0xFFFFu));
+    cmd_msg_print(io->h_out, CMD_MSG_VOL_SERIAL, L" Volume Serial Number is %1\r\n", ser, NULL);
     return 0;
 }
 
@@ -208,27 +248,39 @@ int builtin_pause(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     return 0;
 }
 
-static int toggle_flag_cmd(bool *flag, const wchar_t *label, const wchar_t *tail, const cmd_io_t *io) {
-    wchar_t arg[32];
-    wcsncpy(arg, cmd_skip_ws(tail), 31);
-    arg[31] = L'\0';
+static int toggle_flag_cmd(bool *flag, DWORD on_id, DWORD off_id,
+                           const wchar_t *on_fb, const wchar_t *off_fb,
+                           const wchar_t *tail, const cmd_io_t *io) {
+    wchar_t arg[64];
+    wcsncpy(arg, cmd_skip_ws(tail), 63);
+    arg[63] = L'\0';
     cmd_trim_trailing_ws(arg);
     if (!arg[0]) {
-        cmd_io_printf(io->h_out, L"%ls is %ls.\r\n", label, *flag ? L"on" : L"off");
+        if (*flag) cmd_msg_print(io->h_out, on_id, on_fb, NULL, NULL);
+        else cmd_msg_print(io->h_out, off_id, off_fb, NULL, NULL);
         return 0;
     }
     if (_wcsicmp(arg, L"on") == 0) { *flag = true; return 0; }
     if (_wcsicmp(arg, L"off") == 0) { *flag = false; return 0; }
-    cmd_io_write_sz(io->h_err, L"Must specify ON or OFF.\r\n");
+    if (wcschr(arg, L' ') || wcschr(arg, L'\t')) {
+        return 1;
+    }
+    if (arg[0] == L'/') {
+        cmd_msg_print(io->h_err, CMD_MSG_SYNTAX_ERR, L"The syntax of the command is incorrect.\r\n", NULL, NULL);
+    } else {
+        cmd_msg_print(io->h_err, CMD_MSG_BAD_PARM, L"An incorrect parameter was\r\nentered for the command.\r\n", NULL, NULL);
+    }
     return 1;
 }
 
 int builtin_verify(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
-    return toggle_flag_cmd(&ctx->verify_on, L"VERIFY", tail, io);
+    return toggle_flag_cmd(&ctx->verify_on, CMD_MSG_VERIFY_ON, CMD_MSG_VERIFY_OFF,
+                           L"VERIFY is on.\r\n", L"VERIFY is off.\r\n", tail, io);
 }
 
 int builtin_keys(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
-    return toggle_flag_cmd(&ctx->keys_on, L"KEYS", tail, io);
+    return toggle_flag_cmd(&ctx->keys_on, CMD_MSG_KEYS_ON, CMD_MSG_KEYS_OFF,
+                           L"KEYS is on.\r\n", L"KEYS is off.\r\n", tail, io);
 }
 
 int builtin_break(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
@@ -355,7 +407,8 @@ int builtin_assoc(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
             cmd_io_printf(io->h_out, L"%ls=%ls\r\n", arg, val);
             return 0;
         }
-        cmd_io_printf(io->h_err, L"File association not found for extension %ls\r\n", arg);
+        cmd_msg_print(io->h_err, CMD_MSG_ASSOC_NOT_FOUND,
+                      L"File association not found for extension %1\r\n", arg, NULL);
         return 1;
     }
     *eq = L'\0';
@@ -408,8 +461,9 @@ int builtin_ftype(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
             cmd_io_printf(io->h_out, L"%ls=%ls\r\n", arg, val);
             return 0;
         }
-        cmd_io_printf(io->h_err, L"File type '%ls' not found or no open command associated with it.\r\n", arg);
-        return 1;
+        cmd_msg_print(io->h_err, CMD_MSG_FTYPE_NOT_FOUND,
+                      L"File type '%1' not found or no open command associated with it.\r\n", arg, NULL);
+        return 2;
     }
     *eq = L'\0';
     const wchar_t *rhs = eq + 1;

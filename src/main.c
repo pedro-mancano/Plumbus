@@ -187,6 +187,7 @@ int wmain(void) {
             exec_interactive_line(&ctx, opts.command_parsed);
         }
         int ec = ctx.last_exit_code;
+        if (ec == 9009 && !ctx.should_exit) ec = 1;
         shell_ctx_free(&ctx);
         config_free(&cfg);
         cmdline_free(&opts);

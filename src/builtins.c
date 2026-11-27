@@ -1,4 +1,5 @@
 #include "builtins.h"
+#include "cmd_msg.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -248,7 +249,7 @@ int builtins_dispatch(shell_ctx_t *ctx, const wchar_t *cmd_word, const wchar_t *
             target[3] = L'\0';
         }
         if (!SetCurrentDirectoryW(target)) {
-            cmd_io_write_sz(io->h_err, L"The system cannot find the drive specified.\r\n");
+            cmd_msg_win32(io->h_err, ERROR_INVALID_DRIVE);
             ctx->last_exit_code = 1;
             return 1;
         }

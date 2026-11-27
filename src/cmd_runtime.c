@@ -1,6 +1,7 @@
 #include "cmd_runtime.h"
 #include "cmd_expand.h"
 #include "cmd_ast.h"
+#include "cmd_msg.h"
 #include "resolver.h"
 #include "config.h"
 #include "tui_config.h"
@@ -177,7 +178,7 @@ static bool apply_redirs(const shell_ctx_t *ctx, const cmd_redir_t *redirs,
         free(tgt);
 
         if (h == INVALID_HANDLE_VALUE) {
-            cmd_io_write_sz(out_io->h_err, L"The system cannot find the file specified.\r\n");
+            cmd_msg_win32(out_io->h_err, GetLastError());
             return false;
         }
         if (rs->owned_count < 16) rs->owned[rs->owned_count++] = h;
@@ -497,7 +498,9 @@ static int run_batch_lines(shell_ctx_t *ctx, const batch_lines_t *bl, size_t sta
                 }
             }
             if (!found) {
-                cmd_io_printf(io->h_err, L"The system cannot find the batch label specified - %ls\r\n", frame.goto_label);
+                cmd_msg_print(io->h_err, CMD_MSG_LABEL_NOT_FOUND,
+                              L"The system cannot find the batch label specified - %1\r\n",
+                              frame.goto_label, NULL);
                 ctx->last_exit_code = 1;
                 break;
             }
@@ -614,7 +617,12 @@ static int exec_call(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) 
 
     if (p[0] == L':') {
         const cmd_batch_frame_t *bf = (const cmd_batch_frame_t *)ctx->batch_frame;
-        if (!bf || !g_active_bl) return 1;
+        if (!bf || !g_active_bl) {
+            cmd_msg_print(io->h_err, CMD_MSG_CALL_LABEL_OUTSIDE,
+                          L"Invalid attempt to call batch label outside of batch script.\r\n", NULL, NULL);
+            ctx->last_exit_code = 1;
+            return 1;
+        }
         p++;
         wchar_t lbl[256];
         size_t lbi = 0;
@@ -638,7 +646,8 @@ static int exec_call(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) 
                 }
             }
         }
-        cmd_io_printf(io->h_err, L"The system cannot find the batch label specified - %ls\r\n", lbl);
+        cmd_msg_print(io->h_err, CMD_MSG_LABEL_NOT_FOUND,
+                      L"The system cannot find the batch label specified - %1\r\n", lbl, NULL);
         ctx->last_exit_code = 1;
         return 1;
     }
@@ -709,8 +718,15 @@ static int eval_simple(shell_ctx_t *ctx, const cmd_node_t *node, const cmd_io_t 
 
     if (_wcsicmp(clean_cmd, L"goto") == 0) {
         cmd_batch_frame_t *bf = (cmd_batch_frame_t *)ctx->batch_frame;
+        const wchar_t *ap = cmd_skip_ws(tail);
+        if (!*ap) {
+            cmd_msg_print(local_io.h_err, CMD_MSG_NO_LABEL,
+                          L"No label specified for GOTO command.\r\n", NULL, NULL);
+            ctx->last_exit_code = 1;
+            rc = 1;
+            goto done;
+        }
         if (bf) {
-            const wchar_t *ap = cmd_skip_ws(tail);
             if (*ap == L':') ap++;
             size_t li = 0;
             while (*ap && !iswspace(*ap) && li + 1 < 256) bf->goto_label[li++] = *ap++;
@@ -723,19 +739,26 @@ static int eval_simple(shell_ctx_t *ctx, const cmd_node_t *node, const cmd_io_t 
 
     if (_wcsicmp(clean_cmd, L"shift") == 0) {
         cmd_batch_frame_t *bf = (cmd_batch_frame_t *)ctx->batch_frame;
-        if (bf) {
-            int start_idx = 0;
-            const wchar_t *ap = cmd_skip_ws(tail);
-            if (ap[0] == L'/' && ap[1] >= L'0' && ap[1] <= L'8') {
+        const wchar_t *ap = cmd_skip_ws(tail);
+        int start_idx = 0;
+        if (*ap) {
+            if (ap[0] == L'/' && ap[1] >= L'0' && ap[1] <= L'8' &&
+                (ap[2] == L'\0' || iswspace(ap[2]))) {
                 start_idx = ap[1] - L'0';
+            } else {
+                cmd_msg_print(local_io.h_err, CMD_MSG_INVALID_SHIFT,
+                              L"Invalid parameter to SHIFT command\r\n", NULL, NULL);
+                ctx->last_exit_code = 1;
+                rc = 1;
+                goto done;
             }
-            if (start_idx < bf->argc) {
-                free(bf->argv[start_idx]);
-                for (int i = start_idx; i + 1 < bf->argc; i++) {
-                    bf->argv[i] = bf->argv[i + 1];
-                }
-                bf->argc--;
+        }
+        if (bf && start_idx < bf->argc) {
+            free(bf->argv[start_idx]);
+            for (int i = start_idx; i + 1 < bf->argc; i++) {
+                bf->argv[i] = bf->argv[i + 1];
             }
+            bf->argc--;
         }
         rc = 0;
         goto done;
@@ -767,9 +790,9 @@ static int eval_simple(shell_ctx_t *ctx, const cmd_node_t *node, const cmd_io_t 
     } else if (res.kind == CMD_KIND_EXTERNAL_EXE) {
         rc = spawn_external_exe(ctx, res.resolved_path, tail, &local_io);
     } else {
-        cmd_io_printf(local_io.h_err,
-                      L"'%ls' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n",
-                      clean_cmd);
+        cmd_msg_print(local_io.h_err, CMD_MSG_NOT_RECOGNIZED,
+                      L"'%1' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n",
+                      clean_cmd, NULL);
         ctx->last_exit_code = 9009;
         rc = 9009;
     }
@@ -1322,13 +1345,14 @@ static int exec_line_internal(shell_ctx_t *ctx, const wchar_t *line, const cmd_i
     free(alias_exp);
     if (!pct_exp) return 1;
 
-    wchar_t err_buf[256] = { 0 };
-    cmd_node_t *ast = cmd_ast_parse(pct_exp, err_buf, sizeof(err_buf) / sizeof(err_buf[0]));
+    wchar_t err_buf[512] = { 0 };
+    bool silent_err = false;
+    cmd_node_t *ast = cmd_ast_parse_ex(pct_exp, err_buf, sizeof(err_buf) / sizeof(err_buf[0]), &silent_err);
     free(pct_exp);
 
     if (!ast) {
         if (err_buf[0]) {
-            cmd_io_printf(io->h_err, L"%ls\r\n", err_buf);
+            if (!silent_err) cmd_io_write_sz(io->h_err, err_buf);
             ctx->last_exit_code = 1;
             return 1;
         }

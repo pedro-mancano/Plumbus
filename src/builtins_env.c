@@ -1,5 +1,6 @@
 #include "builtins.h"
 #include "cmd_expand.h"
+#include "cmd_msg.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,7 +50,8 @@ static int list_env_vars(const wchar_t *prefix, const cmd_io_t *io) {
     FreeEnvironmentStringsW(block);
 
     if (plen > 0 && count == 0) {
-        cmd_io_printf(io->h_err, L"Environment variable %ls not defined\r\n", prefix);
+        cmd_msg_print(io->h_err, CMD_MSG_ENV_NOT_DEFINED,
+                      L"Environment variable %1 not defined\r\n", prefix, NULL);
         return 1;
     }
     return 0;
@@ -59,11 +61,19 @@ static int list_env_vars(const wchar_t *prefix, const cmd_io_t *io) {
 typedef struct {
     const wchar_t *p;
     bool err;
+    DWORD err_id;
     const shell_ctx_t *ctx;
 } arith_t;
 
 static void arith_ws(arith_t *a) {
     while (*a->p == L' ' || *a->p == L'\t') a->p++;
+}
+
+static void arith_fail(arith_t *a, DWORD id) {
+    if (!a->err) {
+        a->err = true;
+        a->err_id = id;
+    }
 }
 
 static int32_t arith_comma(arith_t *a);
@@ -75,7 +85,7 @@ static int32_t arith_unary(arith_t *a) {
         int32_t v = arith_comma(a);
         arith_ws(a);
         if (*a->p == L')') a->p++;
-        else a->err = true;
+        else arith_fail(a, CMD_MSG_ARITH_PAREN);
         return v;
     }
     if (*a->p == L'+') { a->p++; return arith_unary(a); }
@@ -85,7 +95,10 @@ static int32_t arith_unary(arith_t *a) {
     if (iswdigit(*a->p)) {
         wchar_t *end = NULL;
         long long val = wcstoll(a->p, &end, 0);
-        if (end == a->p) { a->err = true; return 0; }
+        if (end == a->p || iswalnum(*end)) {
+            arith_fail(a, CMD_MSG_ARITH_BAD_NUM);
+            return 0;
+        }
         a->p = end;
         return (int32_t)val;
     }
@@ -94,7 +107,7 @@ static int32_t arith_unary(arith_t *a) {
         while (iswalnum(*a->p) || *a->p == L'_') a->p++;
         size_t len = (size_t)(a->p - s);
         wchar_t *name = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
-        if (!name) { a->err = true; return 0; }
+        if (!name) { arith_fail(a, CMD_MSG_ARITH_OPERAND); return 0; }
         memcpy(name, s, len * sizeof(wchar_t));
         name[len] = L'\0';
         wchar_t *val = NULL;
@@ -106,7 +119,7 @@ static int32_t arith_unary(arith_t *a) {
         free(name);
         return res;
     }
-    a->err = true;
+    arith_fail(a, CMD_MSG_ARITH_OPERAND);
     return 0;
 }
 
@@ -119,7 +132,7 @@ static int32_t arith_mul(arith_t *a) {
             a->p++;
             int32_t r = arith_unary(a);
             if (op == L'*') v *= r;
-            else if (r == 0) { a->err = true; return 0; }
+            else if (r == 0) { arith_fail(a, CMD_MSG_ARITH_DIV_ZERO); return 0; }
             else if (op == L'/') v /= r;
             else v %= r;
         } else break;
@@ -230,8 +243,8 @@ static int32_t arith_assign(arith_t *a) {
                     case 2: nv = cur + rhs; break;
                     case 3: nv = cur - rhs; break;
                     case 4: nv = cur * rhs; break;
-                    case 5: if (rhs == 0) a->err = true; else nv = cur / rhs; break;
-                    case 6: if (rhs == 0) a->err = true; else nv = cur % rhs; break;
+                    case 5: if (rhs == 0) arith_fail(a, CMD_MSG_ARITH_DIV_ZERO); else nv = cur / rhs; break;
+                    case 6: if (rhs == 0) arith_fail(a, CMD_MSG_ARITH_DIV_ZERO); else nv = cur % rhs; break;
                     case 7: nv = cur & rhs; break;
                     case 8: nv = cur ^ rhs; break;
                     case 9: nv = cur | rhs; break;
@@ -276,20 +289,26 @@ int builtin_set(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     if (_wcsnicmp(p, L"/a", 2) == 0 && (p[2] == L'\0' || p[2] == L' ' || p[2] == L'\t')) {
         p = cmd_skip_ws(p + 2);
         if (!*p) {
-            cmd_io_write_sz(io->h_err, L"The syntax of the command is incorrect.\r\n");
+            cmd_msg_print(io->h_err, CMD_MSG_SYNTAX_ERR,
+                          L"The syntax of the command is incorrect.\r\n", NULL, NULL);
             return 1;
         }
         wchar_t *expr = _wcsdup(p);
         if (!expr) return 1;
         cmd_trim_trailing_ws(expr);
         cmd_strip_outer_quotes(expr);
-        arith_t a = { expr, false, ctx };
+        arith_t a = { expr, false, 0, ctx };
         int32_t res = arith_comma(&a);
         arith_ws(&a);
-        if (a.err || *a.p != L'\0') {
+        if (!a.err && *a.p != L'\0') {
+            arith_fail(&a, (*a.p == L')') ? CMD_MSG_ARITH_PAREN : CMD_MSG_ARITH_OPERATOR);
+        }
+        if (a.err) {
+            DWORD eid = a.err_id ? a.err_id : CMD_MSG_ARITH_32BIT;
             free(expr);
-            cmd_io_write_sz(io->h_err, L"Invalid number.  Numbers are limited to 32-bits of precision.\r\n");
-            return 1;
+            cmd_msg_print(io->h_err, eid,
+                          L"Invalid number.  Numbers are limited to 32-bits of precision.\r\n", NULL, NULL);
+            return (int)eid;
         }
         free(expr);
         if (!ctx->batch_frame) {
@@ -307,7 +326,8 @@ int builtin_set(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
         wchar_t *eq = wcschr(arg, L'=');
         if (!eq || eq == arg) {
             free(arg);
-            cmd_io_write_sz(io->h_err, L"The syntax of the command is incorrect.\r\n");
+            cmd_msg_print(io->h_err, CMD_MSG_SYNTAX_ERR,
+                          L"The syntax of the command is incorrect.\r\n", NULL, NULL);
             return 1;
         }
         *eq = L'\0';
@@ -342,7 +362,8 @@ int builtin_set(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     }
     if (eq == work) {
         free(work);
-        cmd_io_write_sz(io->h_err, L"The syntax of the command is incorrect.\r\n");
+        cmd_msg_print(io->h_err, CMD_MSG_SYNTAX_ERR,
+                      L"The syntax of the command is incorrect.\r\n", NULL, NULL);
         return 1;
     }
     *eq = L'\0';
@@ -400,11 +421,26 @@ int builtin_prompt(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
 }
 
 int builtin_setlocal(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
-    (void)io;
     if (!ctx) return 1;
 
+    int argc = 0;
+    wchar_t **argv = NULL;
+    if (cmd_parse_args(tail, &argc, &argv)) {
+        for (int i = 0; i < argc; i++) {
+            if (_wcsicmp(argv[i], L"ENABLEEXTENSIONS") != 0 &&
+                _wcsicmp(argv[i], L"DISABLEEXTENSIONS") != 0 &&
+                _wcsicmp(argv[i], L"ENABLEDELAYEDEXPANSION") != 0 &&
+                _wcsicmp(argv[i], L"DISABLEDELAYEDEXPANSION") != 0) {
+                cmd_free_args(argc, argv);
+                cmd_msg_print(io->h_err, CMD_MSG_INVALID_SETLOCAL,
+                              L"Invalid parameter to SETLOCAL command\r\n", NULL, NULL);
+                return 1;
+            }
+        }
+    }
+
     LPWCH raw = GetEnvironmentStringsW();
-    if (!raw) return 1;
+    if (!raw) { cmd_free_args(argc, argv); return 1; }
     size_t total_chars = 0;
     while (raw[total_chars] != L'\0') {
         total_chars += wcslen(raw + total_chars) + 1;
@@ -414,7 +450,7 @@ int builtin_setlocal(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) 
     local_frame_t frame;
     memset(&frame, 0, sizeof(frame));
     frame.env_block = (wchar_t *)malloc(total_chars * sizeof(wchar_t));
-    if (!frame.env_block) { FreeEnvironmentStringsW(raw); return 1; }
+    if (!frame.env_block) { FreeEnvironmentStringsW(raw); cmd_free_args(argc, argv); return 1; }
     memcpy(frame.env_block, raw, total_chars * sizeof(wchar_t));
     frame.env_block_chars = total_chars;
     FreeEnvironmentStringsW(raw);
@@ -428,23 +464,19 @@ int builtin_setlocal(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) 
     if (ctx->local_stack_len == ctx->local_stack_cap) {
         size_t ncap = ctx->local_stack_cap ? ctx->local_stack_cap * 2 : 8;
         local_frame_t *ns = (local_frame_t *)realloc(ctx->local_stack, ncap * sizeof(local_frame_t));
-        if (!ns) { free(frame.env_block); return 1; }
+        if (!ns) { free(frame.env_block); cmd_free_args(argc, argv); return 1; }
         ctx->local_stack = ns;
         ctx->local_stack_cap = ncap;
     }
     ((local_frame_t *)ctx->local_stack)[ctx->local_stack_len++] = frame;
 
-    int argc = 0;
-    wchar_t **argv = NULL;
-    if (cmd_parse_args(tail, &argc, &argv)) {
-        for (int i = 0; i < argc; i++) {
-            if (_wcsicmp(argv[i], L"ENABLEEXTENSIONS") == 0) ctx->extensions_enabled = true;
-            else if (_wcsicmp(argv[i], L"DISABLEEXTENSIONS") == 0) ctx->extensions_enabled = false;
-            else if (_wcsicmp(argv[i], L"ENABLEDELAYEDEXPANSION") == 0) ctx->delayed_expansion = true;
-            else if (_wcsicmp(argv[i], L"DISABLEDELAYEDEXPANSION") == 0) ctx->delayed_expansion = false;
-        }
-        cmd_free_args(argc, argv);
+    for (int i = 0; i < argc; i++) {
+        if (_wcsicmp(argv[i], L"ENABLEEXTENSIONS") == 0) ctx->extensions_enabled = true;
+        else if (_wcsicmp(argv[i], L"DISABLEEXTENSIONS") == 0) ctx->extensions_enabled = false;
+        else if (_wcsicmp(argv[i], L"ENABLEDELAYEDEXPANSION") == 0) ctx->delayed_expansion = true;
+        else if (_wcsicmp(argv[i], L"DISABLEDELAYEDEXPANSION") == 0) ctx->delayed_expansion = false;
     }
+    cmd_free_args(argc, argv);
     return 0;
 }
 

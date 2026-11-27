@@ -93,7 +93,9 @@ typedef struct cmd_node {
 /*
  * Parses a cmd.exe command line into an AST.
  * Returns NULL on empty input or syntax error (err_buf receives error text if syntax error).
+ * If out_silent != NULL, *out_silent is true for unclosed '(' at EOF (cmd.exe prints nothing).
  */
+cmd_node_t *cmd_ast_parse_ex(const wchar_t *line, wchar_t *err_buf, size_t err_cap, bool *out_silent);
 cmd_node_t *cmd_ast_parse(const wchar_t *line, wchar_t *err_buf, size_t err_cap);
 void cmd_ast_free(cmd_node_t *node);
 

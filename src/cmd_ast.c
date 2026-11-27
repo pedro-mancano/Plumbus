@@ -1,4 +1,5 @@
 #include "cmd_ast.h"
+#include "cmd_msg.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,15 +12,20 @@ typedef struct {
     wchar_t *err_buf;
     size_t err_cap;
     bool has_error;
+    bool silent_err;
 } parser_t;
 
-static void set_parse_err(parser_t *p, const wchar_t *msg) {
+static void set_parse_err_msg(parser_t *p, DWORD msg_id, const wchar_t *fallback, const wchar_t *arg1) {
     if (p->has_error) return;
     p->has_error = true;
     if (p->err_buf && p->err_cap > 0) {
-        wcsncpy(p->err_buf, msg, p->err_cap - 1);
-        p->err_buf[p->err_cap - 1] = L'\0';
+        cmd_msg_format_buf(msg_id, fallback, arg1, NULL, p->err_buf, p->err_cap);
     }
+}
+
+static void set_parse_err(parser_t *p, const wchar_t *msg) {
+    (void)msg;
+    set_parse_err_msg(p, CMD_MSG_SYNTAX_ERR, L"The syntax of the command is incorrect.\r\n", NULL);
 }
 
 static bool is_hws(wchar_t c) {
@@ -373,16 +379,35 @@ static cmd_node_t *parse_for(parser_t *p) {
                 if (p->src[p->pos] == L'"') p->pos++;
             }
         } else {
+            wchar_t sw_tok[32];
+            size_t si = 0;
+            while (p->src[p->pos + si] && !is_ws(p->src[p->pos + si]) && si + 1 < 32) {
+                sw_tok[si] = p->src[p->pos + si];
+                si++;
+            }
+            sw_tok[si] = L'\0';
             cmd_ast_free(node);
-            set_parse_err(p, L"The syntax of the command is incorrect.");
+            set_parse_err_msg(p, CMD_MSG_UNEXPECTED, L"%1 was unexpected at this time.\r\n", sw_tok);
             return NULL;
         }
     }
 
     skip_ws(p);
-    if (p->src[p->pos] != L'%' || !iswalpha(p->src[p->pos + 1])) {
+    if (p->src[p->pos] != L'%' || !iswalnum(p->src[p->pos + 1])) {
+        if (!p->src[p->pos]) {
+            cmd_ast_free(node);
+            set_parse_err(p, L"The syntax of the command is incorrect.");
+            return NULL;
+        }
+        wchar_t tok[32];
+        size_t ti = 0;
+        while (p->src[p->pos + ti] && !is_ws(p->src[p->pos + ti]) && ti + 1 < 32) {
+            tok[ti] = p->src[p->pos + ti];
+            ti++;
+        }
+        tok[ti] = L'\0';
         cmd_ast_free(node);
-        set_parse_err(p, L"%% was unexpected at this time.");
+        set_parse_err_msg(p, CMD_MSG_UNEXPECTED, L"%1 was unexpected at this time.\r\n", tok);
         return NULL;
     }
     node->u.for_stmt.var_char = p->src[p->pos + 1];
@@ -574,6 +599,7 @@ static cmd_node_t *parse_stmt(parser_t *p) {
         skip_ws(p);
         if (p->src[p->pos] != L')') {
             cmd_ast_free(body);
+            p->silent_err = (p->src[p->pos] == L'\0');
             set_parse_err(p, L"The syntax of the command is incorrect.");
             return NULL;
         }
@@ -684,15 +710,17 @@ static cmd_node_t *parse_seq(parser_t *p) {
     return left;
 }
 
-cmd_node_t *cmd_ast_parse(const wchar_t *line, wchar_t *err_buf, size_t err_cap) {
+cmd_node_t *cmd_ast_parse_ex(const wchar_t *line, wchar_t *err_buf, size_t err_cap, bool *out_silent) {
     if (err_buf && err_cap > 0) err_buf[0] = L'\0';
+    if (out_silent) *out_silent = false;
     if (!line) return NULL;
-    parser_t p = { line, 0, 0, err_buf, err_cap, false };
+    parser_t p = { line, 0, 0, err_buf, err_cap, false, false };
     skip_ws(&p);
     if (!p.src[p.pos]) return NULL;
 
     cmd_node_t *root = parse_seq(&p);
     if (p.has_error) {
+        if (out_silent) *out_silent = p.silent_err;
         cmd_ast_free(root);
         return NULL;
     }
@@ -703,4 +731,8 @@ cmd_node_t *cmd_ast_parse(const wchar_t *line, wchar_t *err_buf, size_t err_cap)
         return NULL;
     }
     return root;
+}
+
+cmd_node_t *cmd_ast_parse(const wchar_t *line, wchar_t *err_buf, size_t err_cap) {
+    return cmd_ast_parse_ex(line, err_buf, err_cap, NULL);
 }
