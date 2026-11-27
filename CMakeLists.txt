@@ -24,6 +24,13 @@ add_library(plumbus_core STATIC
     src/resolver.c
     src/state_sync.c
     src/exec.c
+    src/cmd_expand.c
+    src/cmd_ast.c
+    src/builtins.c
+    src/builtins_fs.c
+    src/builtins_env.c
+    src/builtins_sys.c
+    src/cmd_runtime.c
     src/console.c
     src/history.c
     src/completion.c
@@ -116,6 +123,10 @@ plumbus_add_test(test_line_editor tests/test_line_editor.c)
 plumbus_add_test(test_git_native tests/test_git_native.c)
 plumbus_add_test(test_config tests/test_config.c)
 plumbus_add_test(test_prompt tests/test_prompt.c)
+plumbus_add_test(test_cmd_expand tests/test_cmd_expand.c)
+plumbus_add_test(test_cmd_ast tests/test_cmd_ast.c)
+plumbus_add_test(test_builtins tests/test_builtins.c)
+plumbus_add_test(test_batch_runtime tests/test_batch_runtime.c)
 
 add_executable(test_integration tests/test_integration.c)
 target_include_directories(test_integration PRIVATE "${CMAKE_SOURCE_DIR}/tests")

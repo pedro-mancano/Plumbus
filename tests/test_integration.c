@@ -108,13 +108,17 @@ TEST_CASE(test_integ_comspec_no_infinite_loop) {
     ASSERT_TRUE(strstr(out, "COMSPEC_OK") != NULL);
 }
 
-TEST_CASE(test_integ_anti_recursion_self_backend_fails) {
-    SetEnvironmentVariableW(L"PLUMBUS_CMD_BACKEND", PLUMBUS_EXE_PATH);
+TEST_CASE(test_integ_standalone_zero_cmd_dependency) {
+    SetEnvironmentVariableW(L"PLUMBUS_CMD_BACKEND", L"C:\\nonexistent_dir_xyz\\cmd.exe");
+    SetEnvironmentVariableW(L"ComSpec", PLUMBUS_EXE_PATH);
     char out[4096];
-    int ec = run_plumbus_captured(L"/c echo should_fail", NULL, PLUMBUS_TEST_SANDBOX_DIR, out, sizeof(out));
+    int ec = run_plumbus_captured(L"/d /c \"echo STANDALONE_OK & set /a X=2+3 & call echo X=%X%\"",
+                                  NULL, PLUMBUS_TEST_SANDBOX_DIR, out, sizeof(out));
+    SetEnvironmentVariableW(L"ComSpec", NULL);
     SetEnvironmentVariableW(L"PLUMBUS_CMD_BACKEND", NULL);
-    ASSERT_EQ_INT(1, ec);
-    ASSERT_TRUE(strstr(out, "recursive loop prevented") != NULL);
+    ASSERT_EQ_INT(0, ec);
+    ASSERT_TRUE(strstr(out, "STANDALONE_OK") != NULL);
+    ASSERT_TRUE(strstr(out, "X=5") != NULL);
 }
 
 TEST_CASE(test_integ_interactive_persistence_vcvars_style) {
@@ -207,7 +211,7 @@ int wmain(void) {
     RUN_TEST(test_integ_proxy_c_exitcode_and_quotes);
     RUN_TEST(test_integ_piped_stdin_delegation);
     RUN_TEST(test_integ_comspec_no_infinite_loop);
-    RUN_TEST(test_integ_anti_recursion_self_backend_fails);
+    RUN_TEST(test_integ_standalone_zero_cmd_dependency);
     RUN_TEST(test_integ_interactive_persistence_vcvars_style);
     TEST_SUMMARY();
 }

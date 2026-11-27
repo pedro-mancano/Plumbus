@@ -1,9 +1,8 @@
 #include "cmdline.h"
-#include "backend.h"
 #include "autorun.h"
 #include "proxy.h"
-#include "state_sync.h"
 #include "exec.h"
+#include "builtins.h"
 #include "console.h"
 #include "history.h"
 #include "line_editor.h"
@@ -107,34 +106,45 @@ static void run_tui_repl(shell_ctx_t *ctx, plumbus_config_t *cfg) {
     console_restore(&con);
 }
 
+static void run_piped_stdin_repl(shell_ctx_t *ctx) {
+    HANDLE h_in = GetStdHandle(STD_INPUT_HANDLE);
+    wchar_t line[8192];
+    while (!ctx->should_exit && cmd_io_read_line(h_in, line, sizeof(line) / sizeof(line[0]))) {
+        if (line[0]) {
+            exec_interactive_line(ctx, line);
+        }
+    }
+}
+
+static void print_standalone_help(void) {
+    cmd_io_t io = cmd_io_std();
+    cmd_io_write_sz(io.h_out,
+        L"Plumbus Standalone Command Interpreter (C17)\r\n\r\n"
+        L"PLUMBUS [/C string | /K string] [/D] [/Q] [/S] [/E:ON|OFF] [/V:ON|OFF]\r\n\r\n"
+        L"  /C      Carries out the command specified by string and then terminates.\r\n"
+        L"  /K      Carries out the command specified by string but remains.\r\n"
+        L"  /D      Disable execution of AutoRun commands from registry.\r\n"
+        L"  /Q      Turns echo off.\r\n"
+        L"  /S      Modifies the treatment of string after /C or /K.\r\n"
+        L"  /E:ON   Enable command extensions (default).\r\n"
+        L"  /V:ON   Enable delayed environment variable expansion.\r\n"
+        L"  config  Open interactive TUI Configurator (also F2 or Ctrl+,).\r\n");
+}
+
 int wmain(void) {
     cmd_options_t opts;
     cmdline_parse(GetCommandLineW(), &opts);
 
-    if (opts.mode == CMD_MODE_BENCH_INIT) {
+    if (opts.mode == CMD_MODE_BENCH_INIT || opts.mode == CMD_MODE_INTERNAL_SYNC) {
         cmdline_free(&opts);
         return 0;
     }
 
-    if (opts.mode == CMD_MODE_INTERNAL_SYNC) {
-        int rc = state_sync_write_current(opts.sync_file_path, opts.sync_exit_code);
+    if (opts.mode == CMD_MODE_HELP) {
+        print_standalone_help();
         cmdline_free(&opts);
-        return rc;
+        return 0;
     }
-
-    wchar_t backend_path[32768];
-    backend_status_t bstat = backend_resolve_cmd(backend_path, sizeof(backend_path) / sizeof(backend_path[0]));
-    if (bstat != BACKEND_OK) {
-        if (bstat == BACKEND_ERR_SELF_LOOP) {
-            fwprintf(stderr, L"plumbus: fatal error: backend resolves to plumbus itself (recursive loop prevented).\n");
-        } else {
-            fwprintf(stderr, L"plumbus: fatal error: failed to locate cmd.exe backend (code %d).\n", (int)bstat);
-        }
-        cmdline_free(&opts);
-        return 1;
-    }
-
-    bool interactive_stdin = proxy_is_stdin_interactive();
 
     if (opts.mode == CMD_MODE_CONFIG) {
         plumbus_config_t cfg;
@@ -154,20 +164,12 @@ int wmain(void) {
         return 0;
     }
 
-    if (opts.mode == CMD_MODE_EXEC_EXIT ||
-        opts.mode == CMD_MODE_HELP ||
-        !interactive_stdin) {
-        int rc = proxy_delegate_raw(backend_path, opts.raw_after_exe);
-        cmdline_free(&opts);
-        return rc;
-    }
-
     plumbus_config_t cfg;
     config_init(&cfg);
     config_load_rc(&cfg);
 
     shell_ctx_t ctx;
-    if (!shell_ctx_init(&ctx, &opts, backend_path)) {
+    if (!shell_ctx_init(&ctx, &opts, NULL)) {
         config_free(&cfg);
         cmdline_free(&opts);
         return 1;
@@ -180,12 +182,27 @@ int wmain(void) {
         free(autorun);
     }
 
+    if (opts.mode == CMD_MODE_EXEC_EXIT) {
+        if (opts.command_parsed && opts.command_parsed[0]) {
+            exec_interactive_line(&ctx, opts.command_parsed);
+        }
+        int ec = ctx.last_exit_code;
+        shell_ctx_free(&ctx);
+        config_free(&cfg);
+        cmdline_free(&opts);
+        return ec;
+    }
+
     if (opts.mode == CMD_MODE_EXEC_KEEP && opts.command_parsed && opts.command_parsed[0]) {
         exec_interactive_line(&ctx, opts.command_parsed);
     }
 
     if (!ctx.should_exit) {
-        run_tui_repl(&ctx, &cfg);
+        if (proxy_is_stdin_interactive()) {
+            run_tui_repl(&ctx, &cfg);
+        } else {
+            run_piped_stdin_repl(&ctx);
+        }
     }
 
     int final_ec = ctx.last_exit_code;

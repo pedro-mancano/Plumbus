@@ -71,9 +71,13 @@ TEST_CASE(test_exec_edge_cases_no_sync_leak) {
     ASSERT_TRUE(strstr(out, "--__sync-state") == NULL);
     ASSERT_TRUE(strstr(out, "plumbus") == NULL);
 
-    /* 2. Unclosed double quote */
+    /* 2. Unclosed double quote (both echo "hello and echo a") */
     ASSERT_EQ_INT(0, run_interactive_captured(&ctx, L"echo \"hello", out, sizeof(out)));
     ASSERT_TRUE(strstr(out, "\"hello") != NULL);
+    ASSERT_TRUE(strstr(out, "--__sync-state") == NULL);
+
+    ASSERT_EQ_INT(0, run_interactive_captured(&ctx, L"echo a\"", out, sizeof(out)));
+    ASSERT_TRUE(strstr(out, "a\"") != NULL);
     ASSERT_TRUE(strstr(out, "--__sync-state") == NULL);
 
     /* 3. Odd quote count with prior pair */
@@ -138,6 +142,7 @@ TEST_CASE(test_exec_edge_cases_no_sync_leak) {
     ASSERT_EQ_INT(13, run_interactive_captured(&ctx, L"echo bye & exit /b 13", out, sizeof(out)));
     ASSERT_TRUE(strstr(out, "bye") != NULL);
     ASSERT_TRUE(strstr(out, "--__sync-state") == NULL);
+    ctx.should_exit = false;
 
     /* 16. for %i loop */
     ASSERT_EQ_INT(0, run_interactive_captured(&ctx, L"for %i in (1 2) do @echo ITEM_%i", out, sizeof(out)));
