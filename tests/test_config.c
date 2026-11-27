@@ -29,6 +29,11 @@ TEST_CASE(test_config_cmdrc_aliases_theme_and_expansion) {
     SetEnvironmentVariableW(L"PLUMBUS_RC_FILE", rc);
     plumbus_config_t cfg;
     config_init(&cfg);
+    ASSERT_EQ_INT(THEME_CMD, cfg.theme);
+    ASSERT_EQ_WSTR(L"cmd", config_theme_name(THEME_CMD));
+    plumbus_theme_t parsed_t = THEME_MINIMAL;
+    ASSERT_TRUE(config_theme_from_name(L"cmd", &parsed_t));
+    ASSERT_EQ_INT(THEME_CMD, parsed_t);
     ASSERT_TRUE(config_load_rc(&cfg));
 
     ASSERT_EQ_INT(THEME_AGNOSTER, cfg.theme);
@@ -79,6 +84,7 @@ TEST_CASE(test_tui_config_state_navigation_toggles_and_aliases) {
     tui_cfg_state_t st;
     tui_cfg_state_init(&st, &live);
     ASSERT_EQ_INT(TUI_ITEM_THEME, st.selected);
+    ASSERT_EQ_INT(THEME_CMD, st.draft.theme);
 
     /* Toggle theme forward across all THEME_COUNT themes & back */
     for (int i = 1; i < (int)THEME_COUNT; i++) {
@@ -86,10 +92,11 @@ TEST_CASE(test_tui_config_state_navigation_toggles_and_aliases) {
         ASSERT_EQ_INT(i, st.draft.theme);
     }
     tui_cfg_step_selected(&st, 1);
-    ASSERT_EQ_INT(THEME_ROBBYRUSSELL, st.draft.theme);
+    ASSERT_EQ_INT(THEME_CMD, st.draft.theme);
     tui_cfg_step_selected(&st, -1);
     ASSERT_EQ_INT(THEME_MINIMAL, st.draft.theme);
-    tui_cfg_step_selected(&st, 1);
+    tui_cfg_step_selected(&st, 1); /* cmd */
+    tui_cfg_step_selected(&st, 1); /* robbyrussell */
     tui_cfg_step_selected(&st, 1); /* agnoster */
     ASSERT_EQ_INT(THEME_AGNOSTER, st.draft.theme);
 
@@ -102,7 +109,7 @@ TEST_CASE(test_tui_config_state_navigation_toggles_and_aliases) {
 
     /* Restore defaults */
     tui_cfg_restore_defaults(&st);
-    ASSERT_EQ_INT(THEME_ROBBYRUSSELL, st.draft.theme);
+    ASSERT_EQ_INT(THEME_CMD, st.draft.theme);
     ASSERT_TRUE(st.draft.syntax_highlighting);
 
     /* Alias management */

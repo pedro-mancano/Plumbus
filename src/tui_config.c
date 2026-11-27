@@ -1,4 +1,5 @@
 #include "tui_config.h"
+#include "cmd_msg.h"
 #include "console.h"
 #include "prompt.h"
 #include <windows.h>
@@ -237,7 +238,18 @@ static void render_tui(const tui_cfg_state_t *st, const wchar_t *cwd, int last_e
 
     wchar_t preview_row1[2048] = { 0 };
     wchar_t preview_row2[2048] = { 0 };
-    if (p_ansi) {
+    if (st->draft.theme == THEME_CMD) {
+        size_t max_vis = (size_t)(inner_w > 2 ? inner_w - 2 : 1);
+        cmd_format_ver_banner(preview_row1, sizeof(preview_row1) / sizeof(preview_row1[0]));
+        if (wcslen(preview_row1) > max_vis) {
+            preview_row1[max_vis] = L'\0';
+        }
+        swprintf(preview_row2, 2048, L"%lsgit status", p_ansi ? p_ansi : L">");
+        if (wcslen(preview_row2) > max_vis) {
+            preview_row2[max_vis] = L'\0';
+        }
+        free(p_ansi);
+    } else if (p_ansi) {
         wchar_t *nl = wcschr(p_ansi, L'\n');
         if (nl) {
             *nl = L'\0';

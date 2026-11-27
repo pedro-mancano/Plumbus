@@ -123,8 +123,10 @@ TEST_CASE(test_tui_f2_plumbus_config_and_ghost_clear) {
     InitializeCriticalSection(&cap.cs);
     HANDLE hThread = CreateThread(NULL, 0, reader_thread, &cap, 0, NULL);
 
-    /* Wait for initial prompt */
-    ASSERT_TRUE(wait_for_substr(&cap, 0, "\xE2\x9E\x9C", 4000)); /* ➜ */
+    /* Wait for authentic cmd.exe startup header + initial prompt (default theme=cmd) */
+    ASSERT_TRUE(wait_for_substr(&cap, 0, "Microsoft Windows [", 4000));
+    ASSERT_TRUE(wait_for_substr(&cap, 0, "(c) Microsoft Corporation", 4000));
+    ASSERT_TRUE(wait_for_substr(&cap, 0, ">", 4000));
 
     /* Case A: F2 opens Configurator & preserves typed line */
     size_t pos = get_len(&cap);
@@ -138,13 +140,13 @@ TEST_CASE(test_tui_f2_plumbus_config_and_ghost_clear) {
     send_bytes(in_w, "\r");
     ASSERT_TRUE(wait_for_substr(&cap, pos, "keep_me", 3000));
 
-    /* Case B: plumbus config opens Configurator, Space toggles agnoster, S saves .cmdrc */
+    /* Case B: plumbus config opens Configurator, Space x2 toggles cmd->robbyrussell->agnoster, S saves .cmdrc */
     Sleep(150);
     pos = get_len(&cap);
     send_bytes(in_w, "plumbus config\r");
     ASSERT_TRUE(wait_for_substr(&cap, pos, "Plumbus Configurator", 3000));
     Sleep(100);
-    send_bytes(in_w, " s"); /* Space toggles robbyrussell->agnoster, s saves */
+    send_bytes(in_w, "  s"); /* Space twice toggles cmd->robbyrussell->agnoster, s saves */
     ASSERT_TRUE(wait_for_substr(&cap, pos, "\xEE\x82\xB0", 3000)); /*  agnoster separator */
 
     /* Case C: Ghost text appears while typing "echo hel", cleared on Enter! */
@@ -172,6 +174,12 @@ TEST_CASE(test_tui_f2_plumbus_config_and_ghost_clear) {
     pos = get_len(&cap);
     send_bytes(in_w, "echo multiline_ok\r");
     ASSERT_TRUE(wait_for_substr(&cap, pos, "multiline_ok", 3000));
+
+    /* Case E: Switch back to classic cmd theme */
+    Sleep(100);
+    pos = get_len(&cap);
+    send_bytes(in_w, "theme cmd\r");
+    ASSERT_TRUE(wait_for_substr(&cap, pos, ">", 3000));
 
     send_bytes(in_w, "exit\r");
     if (WaitForSingleObject(pi.hProcess, 3000) != WAIT_OBJECT_0) {

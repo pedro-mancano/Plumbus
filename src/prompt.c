@@ -1,8 +1,10 @@
 #include "prompt.h"
+#include "cmd_msg.h"
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wctype.h>
 
 static void abbreviate_home(const wchar_t *cwd, wchar_t *out, size_t out_cap) {
     if (!cwd || !*cwd) {
@@ -35,14 +37,104 @@ static void get_user_and_host(wchar_t *user, size_t user_cap, wchar_t *host, siz
     host[host_cap - 1] = L'\0';
 }
 
+static wchar_t *render_cmd_prompt(const wchar_t *cwd) {
+    wchar_t fmt[1024];
+    DWORD fl = GetEnvironmentVariableW(L"PROMPT", fmt, (DWORD)(sizeof(fmt) / sizeof(fmt[0])));
+    if (fl == 0 || fl >= sizeof(fmt) / sizeof(fmt[0])) {
+        wcscpy(fmt, L"$P$G");
+    }
+
+    size_t cap = (cwd ? wcslen(cwd) : 0) + 1024;
+    wchar_t *out = (wchar_t *)malloc(cap * sizeof(wchar_t));
+    if (!out) return NULL;
+    size_t len = 0;
+
+    for (const wchar_t *p = fmt; *p; p++) {
+        const wchar_t *ins = NULL;
+        wchar_t tmp[256] = { 0 };
+        if (*p == L'$' && p[1] != L'\0') {
+            p++;
+            wchar_t code = (wchar_t)towupper(*p);
+            switch (code) {
+                case L'P': ins = cwd ? cwd : L""; break;
+                case L'G': ins = L">"; break;
+                case L'L': ins = L"<"; break;
+                case L'Q': ins = L"="; break;
+                case L'S': ins = L" "; break;
+                case L'A': ins = L"&"; break;
+                case L'B': ins = L"|"; break;
+                case L'C': ins = L"("; break;
+                case L'F': ins = L")"; break;
+                case L'E': ins = L"\x1b"; break;
+                case L'$': ins = L"$"; break;
+                case L'_': ins = L"\n"; break;
+                case L'N':
+                    tmp[0] = (cwd && cwd[0] && cwd[1] == L':') ? cwd[0] : L'C';
+                    tmp[1] = L'\0';
+                    ins = tmp;
+                    break;
+                case L'H':
+                    if (len > 0) len--;
+                    continue;
+                case L'V':
+                    cmd_format_ver_banner(tmp, sizeof(tmp) / sizeof(tmp[0]));
+                    ins = tmp;
+                    break;
+                case L'D':
+                    if (GetDateFormatW(LOCALE_USER_DEFAULT, DATE_SHORTDATE, NULL, NULL,
+                                       tmp, (int)(sizeof(tmp) / sizeof(tmp[0]))) > 0) {
+                        ins = tmp;
+                    }
+                    break;
+                case L'T': {
+                    SYSTEMTIME st;
+                    GetLocalTime(&st);
+                    swprintf(tmp, sizeof(tmp) / sizeof(tmp[0]), L"%2u:%02u:%02u.%02u",
+                             (unsigned)st.wHour, (unsigned)st.wMinute,
+                             (unsigned)st.wSecond, (unsigned)(st.wMilliseconds / 10));
+                    ins = tmp;
+                    break;
+                }
+                default:
+                    continue;
+            }
+        } else {
+            tmp[0] = *p;
+            tmp[1] = L'\0';
+            ins = tmp;
+        }
+        if (ins && *ins) {
+            size_t ilen = wcslen(ins);
+            if (len + ilen + 1 > cap) {
+                size_t ncap = (len + ilen + 1) * 2;
+                wchar_t *nb = (wchar_t *)realloc(out, ncap * sizeof(wchar_t));
+                if (!nb) {
+                    free(out);
+                    return NULL;
+                }
+                out = nb;
+                cap = ncap;
+            }
+            memcpy(out + len, ins, ilen * sizeof(wchar_t));
+            len += ilen;
+        }
+    }
+    out[len] = L'\0';
+    return out;
+}
+
 wchar_t *prompt_render(const plumbus_config_t *cfg,
                        const wchar_t *cwd,
                        int last_exit_code,
                        const git_status_t *git) {
+    plumbus_theme_t theme = cfg ? cfg->theme : THEME_CMD;
+    if (theme == THEME_CMD) {
+        return render_cmd_prompt(cwd);
+    }
+
     wchar_t short_path[MAX_PATH * 4];
     abbreviate_home(cwd, short_path, sizeof(short_path) / sizeof(short_path[0]));
 
-    plumbus_theme_t theme = cfg ? cfg->theme : THEME_ROBBYRUSSELL;
     bool nf = cfg ? cfg->nerd_fonts : true;
 
     size_t cap = wcslen(short_path) + 1024;

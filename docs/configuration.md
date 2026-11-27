@@ -28,7 +28,7 @@ Arquivo texto UTF-8 carregado automaticamente ao iniciar uma sessão interativa.
 ### Diretivas Suportadas
 | Diretiva | Valores | Padrão | Descrição |
 |---|---|---|---|
-| `theme` | `robbyrussell` \| `agnoster` \| `omb-box` \| `pure` \| `dracula` \| `minimal` | `robbyrussell` | Tema visual do prompt |
+| `theme` | `cmd` \| `robbyrussell` \| `agnoster` \| `omb-box` \| `pure` \| `dracula` \| `minimal` | `cmd` | Tema visual do prompt |
 | `nerd_fonts` | `on` \| `off` | `on` | Habilita glifos Powerline (``, ``) no tema `agnoster` |
 | `git_status` | `on` \| `off` | `on` | Exibe branch e status (`✔`/`✗`) no prompt |
 | `syntax_highlighting` | `on` \| `off` | `on` | Colore comandos, flags, strings e operadores em tempo real |

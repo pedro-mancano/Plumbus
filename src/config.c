@@ -6,18 +6,20 @@
 
 const wchar_t *config_theme_name(plumbus_theme_t theme) {
     switch (theme) {
-        case THEME_AGNOSTER: return L"agnoster";
-        case THEME_OMB_BOX:  return L"omb-box";
-        case THEME_PURE:     return L"pure";
-        case THEME_DRACULA:  return L"dracula";
-        case THEME_MINIMAL:  return L"minimal";
-        case THEME_ROBBYRUSSELL:
-        default:             return L"robbyrussell";
+        case THEME_ROBBYRUSSELL: return L"robbyrussell";
+        case THEME_AGNOSTER:     return L"agnoster";
+        case THEME_OMB_BOX:      return L"omb-box";
+        case THEME_PURE:         return L"pure";
+        case THEME_DRACULA:      return L"dracula";
+        case THEME_MINIMAL:      return L"minimal";
+        case THEME_CMD:
+        default:                 return L"cmd";
     }
 }
 
 bool config_theme_from_name(const wchar_t *name, plumbus_theme_t *out_theme) {
     if (!name || !out_theme) return false;
+    if (_wcsicmp(name, L"cmd") == 0)          { *out_theme = THEME_CMD; return true; }
     if (_wcsicmp(name, L"robbyrussell") == 0) { *out_theme = THEME_ROBBYRUSSELL; return true; }
     if (_wcsicmp(name, L"agnoster") == 0)     { *out_theme = THEME_AGNOSTER; return true; }
     if (_wcsicmp(name, L"omb-box") == 0 || _wcsicmp(name, L"box") == 0) { *out_theme = THEME_OMB_BOX; return true; }
@@ -29,7 +31,7 @@ bool config_theme_from_name(const wchar_t *name, plumbus_theme_t *out_theme) {
 
 void config_reset_defaults(plumbus_config_t *cfg) {
     if (!cfg) return;
-    cfg->theme = THEME_ROBBYRUSSELL;
+    cfg->theme = THEME_CMD;
     cfg->nerd_fonts = true;
     cfg->syntax_highlighting = true;
     cfg->ghost_text = true;

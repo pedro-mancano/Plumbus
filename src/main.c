@@ -3,6 +3,7 @@
 #include "proxy.h"
 #include "exec.h"
 #include "builtins.h"
+#include "cmd_msg.h"
 #include "console.h"
 #include "history.h"
 #include "line_editor.h"
@@ -40,17 +41,26 @@ static bool repl_open_config_cb(void *user_data,
     if (!rc || !rc->cfg) return false;
     bool saved = tui_cfg_run(rc->cfg, rc->cwd, rc->last_exit_code, rc->git_st);
     if (saved) {
+        bool is_cmd = (rc->cfg->theme == THEME_CMD);
         git_status_t g = { 0 };
-        if (rc->cfg->git_status) git_native_inspect(rc->cwd, &g);
-        wchar_t *np = prompt_render(rc->cfg, rc->cwd, rc->last_exit_code, rc->cfg->git_status ? &g : NULL);
+        if (!is_cmd && rc->cfg->git_status) git_native_inspect(rc->cwd, &g);
+        wchar_t *np = prompt_render(rc->cfg, rc->cwd, rc->last_exit_code,
+                                    (!is_cmd && rc->cfg->git_status) ? &g : NULL);
         if (np) {
             *new_prompt_ansi = np;
             *new_prompt_vis_len = prompt_last_line_visible_width(np);
         }
-        *out_enable_hl = rc->cfg->syntax_highlighting;
-        *out_enable_ghost = rc->cfg->ghost_text;
+        *out_enable_hl = is_cmd ? false : rc->cfg->syntax_highlighting;
+        *out_enable_ghost = is_cmd ? false : rc->cfg->ghost_text;
     }
     return saved;
+}
+
+static bool is_cls_command(const wchar_t *line) {
+    if (!line) return false;
+    while (*line == L' ' || *line == L'\t') line++;
+    return _wcsnicmp(line, L"cls", 3) == 0 &&
+           (line[3] == L'\0' || line[3] == L' ' || line[3] == L'\t');
 }
 
 static void run_tui_repl(shell_ctx_t *ctx, plumbus_config_t *cfg) {
@@ -60,29 +70,37 @@ static void run_tui_repl(shell_ctx_t *ctx, plumbus_config_t *cfg) {
     history_t hist;
     history_init(&hist, 5000);
 
+    if (cfg->theme == THEME_CMD && !ctx->echo_off) {
+        cmd_print_startup_header(GetStdHandle(STD_OUTPUT_HANDLE));
+    }
+
     while (!ctx->should_exit) {
         wchar_t cwd[MAX_PATH * 4];
         if (GetCurrentDirectoryW((DWORD)(sizeof(cwd) / sizeof(cwd[0])), cwd) == 0) {
             wcscpy(cwd, L"~");
         }
 
+        bool is_cmd = (cfg->theme == THEME_CMD);
         git_status_t git_st = { 0 };
-        if (cfg->git_status) {
+        if (!is_cmd && cfg->git_status) {
             git_native_inspect(cwd, &git_st);
         }
 
-        wchar_t *prompt = prompt_render(cfg, cwd, ctx->last_exit_code, cfg->git_status ? &git_st : NULL);
+        wchar_t *prompt = prompt_render(cfg, cwd, ctx->last_exit_code,
+                                        (!is_cmd && cfg->git_status) ? &git_st : NULL);
         const wchar_t *pstr = prompt ? prompt : L"> ";
         size_t pvis = prompt_last_line_visible_width(pstr);
 
         repl_cfg_ctx_t rctx = { cfg, cwd, ctx->last_exit_code, &git_st };
+        bool eff_hl = is_cmd ? false : cfg->syntax_highlighting;
+        bool eff_ghost = is_cmd ? false : cfg->ghost_text;
 
         console_enter_raw(&con);
         wchar_t *line = NULL;
         line_read_status_t st = line_editor_read(
             pstr, pvis, &hist,
             alias_lookup_cb, cfg,
-            cfg->syntax_highlighting, cfg->ghost_text,
+            eff_hl, eff_ghost,
             repl_open_config_cb, &rctx,
             &line);
         console_restore(&con);
@@ -98,6 +116,9 @@ static void run_tui_repl(shell_ctx_t *ctx, plumbus_config_t *cfg) {
         if (*line) {
             history_add(&hist, line);
             exec_interactive_line(ctx, line);
+            if (!ctx->should_exit && cfg->theme == THEME_CMD && !is_cls_command(line)) {
+                cmd_io_write_sz(GetStdHandle(STD_OUTPUT_HANDLE), L"\r\n");
+            }
         }
         free(line);
     }

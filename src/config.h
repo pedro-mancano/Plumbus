@@ -6,7 +6,8 @@
 #include <wchar.h>
 
 typedef enum {
-    THEME_ROBBYRUSSELL = 0,
+    THEME_CMD = 0,
+    THEME_ROBBYRUSSELL,
     THEME_AGNOSTER,
     THEME_OMB_BOX,
     THEME_PURE,

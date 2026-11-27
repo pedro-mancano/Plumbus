@@ -126,7 +126,7 @@ static bool try_exec_plumbus_builtin(shell_ctx_t *ctx, const wchar_t *p, const c
         if (!*arg) {
             cmd_io_printf(io->h_out, L"%ls\r\n", config_theme_name(cfg->theme));
         } else if (!config_theme_from_name(arg, &cfg->theme)) {
-            cmd_io_printf(io->h_err, L"Unknown theme: %ls (available: robbyrussell, agnoster, omb-box, pure, dracula, minimal)\r\n", arg);
+            cmd_io_printf(io->h_err, L"Unknown theme: %ls (available: cmd, robbyrussell, agnoster, omb-box, pure, dracula, minimal)\r\n", arg);
             ctx->last_exit_code = 1;
             return true;
         }

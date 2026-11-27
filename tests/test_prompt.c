@@ -17,7 +17,27 @@ TEST_CASE(test_prompt_themes_home_abbr_and_visible_width) {
     git.is_dirty = true;
     wcscpy(git.branch, L"main");
 
+    /* 0. cmd (default, identical to stock cmd.exe: full path + '>', no ANSI, no Git) */
+    ASSERT_EQ_INT(THEME_CMD, cfg.theme);
+    SetEnvironmentVariableW(L"PROMPT", NULL);
+    wchar_t *p0 = prompt_render(&cfg, path, 1, &git);
+    wchar_t expected_cmd[MAX_PATH + 40];
+    swprintf(expected_cmd, MAX_PATH + 40, L"%ls>", path);
+    ASSERT_EQ_WSTR(expected_cmd, p0);
+    ASSERT_TRUE(wcschr(p0, L'\x1b') == NULL);
+    ASSERT_TRUE(wcsstr(p0, L"main") == NULL);
+    ASSERT_EQ_INT((int)(wcslen(path) + 1), (int)prompt_visible_width(p0));
+    free(p0);
+
+    SetEnvironmentVariableW(L"PROMPT", L"[$P]$S$G");
+    wchar_t *p0_custom = prompt_render(&cfg, path, 0, &git);
+    swprintf(expected_cmd, MAX_PATH + 40, L"[%ls] >", path);
+    ASSERT_EQ_WSTR(expected_cmd, p0_custom);
+    free(p0_custom);
+    SetEnvironmentVariableW(L"PROMPT", NULL);
+
     /* 1. robbyrussell */
+    cfg.theme = THEME_ROBBYRUSSELL;
     wchar_t *p1 = prompt_render(&cfg, path, 0, &git);
     ASSERT_CONTAINS_WSTR(p1, L"~\\Projects");
     ASSERT_CONTAINS_WSTR(p1, L"git:(");

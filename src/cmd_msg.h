@@ -18,6 +18,7 @@ enum {
     CMD_MSG_COPY_SELF          = 9033,
     CMD_MSG_UNEXPECTED         = 9034,
     CMD_MSG_DUP_FILE           = 9037,
+    CMD_MSG_VER_BANNER         = 9040,
     CMD_MSG_VOL_SERIAL         = 9051,
     CMD_MSG_DIR_EXISTS         = 9052,
     CMD_MSG_VOL_NO_LABEL       = 9054,
@@ -65,5 +66,15 @@ void cmd_msg_print(HANDLE h, DWORD msg_id, const wchar_t *fallback,
 void cmd_msg_format_buf(DWORD msg_id, const wchar_t *fallback,
                         const wchar_t *arg1, const wchar_t *arg2,
                         wchar_t *out_buf, size_t out_cap);
+
+/*
+ * Formats the localized "Microsoft Windows [Version ...]" banner line (without trailing CRLF).
+ */
+void cmd_format_ver_banner(wchar_t *out_buf, size_t out_cap);
+
+/*
+ * Prints the authentic cmd.exe startup header (version + copyright + blank line) to h.
+ */
+void cmd_print_startup_header(HANDLE h);
 
 #endif /* PLUMBUS_CMD_MSG_H */

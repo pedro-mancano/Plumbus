@@ -91,3 +91,80 @@ void cmd_msg_print(HANDLE h, DWORD msg_id, const wchar_t *fallback,
     cmd_msg_format_buf(msg_id, fallback, arg1, arg2, buf, sizeof(buf) / sizeof(buf[0]));
     cmd_io_write_sz(h, buf);
 }
+
+typedef LONG (WINAPI *cmd_rtl_get_version_fn)(OSVERSIONINFOW *);
+typedef LPWSTR (WINAPI *cmd_branding_fmt_fn)(LPCWSTR);
+
+void cmd_format_ver_banner(wchar_t *out_buf, size_t out_cap) {
+    if (!out_buf || out_cap == 0) return;
+    out_buf[0] = L'\0';
+
+    OSVERSIONINFOW osv;
+    ZeroMemory(&osv, sizeof(osv));
+    osv.dwOSVersionInfoSize = sizeof(osv);
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll) {
+        cmd_rtl_get_version_fn fn = (cmd_rtl_get_version_fn)(void *)GetProcAddress(ntdll, "RtlGetVersion");
+        if (fn) fn(&osv);
+    }
+
+    DWORD ubr = 0;
+    DWORD cb = sizeof(ubr);
+    wchar_t ver[64];
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+                     L"UBR", RRF_RT_REG_DWORD, NULL, &ubr, &cb) == ERROR_SUCCESS) {
+        swprintf(ver, sizeof(ver) / sizeof(ver[0]), L"%lu.%lu.%05lu.%lu",
+                 (unsigned long)osv.dwMajorVersion,
+                 (unsigned long)osv.dwMinorVersion,
+                 (unsigned long)osv.dwBuildNumber,
+                 (unsigned long)ubr);
+    } else {
+        swprintf(ver, sizeof(ver) / sizeof(ver[0]), L"%lu.%lu.%lu",
+                 (unsigned long)osv.dwMajorVersion,
+                 (unsigned long)osv.dwMinorVersion,
+                 (unsigned long)osv.dwBuildNumber);
+    }
+
+    cmd_msg_format_buf(CMD_MSG_VER_BANNER, L"Microsoft Windows [Version %1]",
+                       ver, NULL, out_buf, out_cap);
+    size_t len = wcslen(out_buf);
+    while (len > 0 && (out_buf[len - 1] == L'\r' || out_buf[len - 1] == L'\n')) {
+        out_buf[--len] = L'\0';
+    }
+}
+
+void cmd_print_startup_header(HANDLE h) {
+    if (!h || h == INVALID_HANDLE_VALUE) return;
+
+    wchar_t line1[256];
+    cmd_format_ver_banner(line1, sizeof(line1) / sizeof(line1[0]));
+    cmd_io_write_sz(h, line1);
+    cmd_io_write_sz(h, L"\r\n");
+
+    bool printed_copyright = false;
+    HMODULE wb = LoadLibraryW(L"winbrand.dll");
+    if (wb) {
+        cmd_branding_fmt_fn fn = (cmd_branding_fmt_fn)(void *)GetProcAddress(wb, "BrandingFormatString");
+        if (fn) {
+            LPWSTR br = fn(L"%WINDOWS_COPYRIGHT%");
+            if (br && br[0]) {
+                if (br[0] == L'\u00A9') {
+                    cmd_io_write_sz(h, L"(c)");
+                    cmd_io_write_sz(h, br + 1);
+                } else {
+                    cmd_io_write_sz(h, br);
+                }
+                cmd_io_write_sz(h, L"\r\n");
+                printed_copyright = true;
+            }
+            if (br) GlobalFree(br);
+        }
+        FreeLibrary(wb);
+    }
+
+    if (!printed_copyright) {
+        cmd_io_write_sz(h, L"(c) Microsoft Corporation. All rights reserved.\r\n");
+    }
+    cmd_io_write_sz(h, L"\r\n");
+}
