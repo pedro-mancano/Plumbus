@@ -1,0 +1,13 @@
+backup/
+build/
+build_release/
+dist/
+.agents/
+skills-lock.json
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exe
+*.tmp
+*.log
