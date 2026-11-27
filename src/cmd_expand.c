@@ -305,11 +305,8 @@ wchar_t *cmd_apply_tilde_mods(const wchar_t *raw_arg, const wchar_t *mods) {
 }
 
 static const wchar_t *get_batch_arg(const cmd_batch_frame_t *bf, int idx) {
-    if (!bf) return NULL;
-    if (idx == 0) return bf->script_path;
-    int eff = idx + bf->shift_offset;
-    if (eff < 1 || eff >= bf->argc) return NULL;
-    return bf->argv[eff];
+    if (!bf || idx < 0 || idx >= bf->argc) return NULL;
+    return bf->argv[idx];
 }
 
 wchar_t *cmd_expand_percent(const shell_ctx_t *ctx, const wchar_t *line, bool is_batch) {

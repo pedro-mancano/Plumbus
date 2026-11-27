@@ -16,7 +16,6 @@ typedef struct cmd_batch_frame {
     const wchar_t *script_path;
     int argc;
     wchar_t **argv;
-    int shift_offset;
     const wchar_t *raw_tail;
     size_t local_stack_base;
     bool goto_pending;

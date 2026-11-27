@@ -223,18 +223,60 @@ static int spawn_external_exe(shell_ctx_t *ctx, const wchar_t *exe_path,
     cmdline[2 + elen + tlen] = L'\0';
 
     HANDLE dup_in = NULL, dup_out = NULL, dup_err = NULL;
-    STARTUPINFOW si;
+    HANDLE h_in = ensure_inheritable(io->h_in, &dup_in);
+    HANDLE h_out = ensure_inheritable(io->h_out, &dup_out);
+    HANDLE h_err = ensure_inheritable(io->h_err, &dup_err);
+
+    HANDLE inherit_list[3];
+    DWORD inherit_count = 0;
+    HANDLE cand[3] = { h_in, h_out, h_err };
+    for (int i = 0; i < 3; i++) {
+        if (!cand[i] || cand[i] == INVALID_HANDLE_VALUE) continue;
+        bool dup_found = false;
+        for (DWORD j = 0; j < inherit_count; j++) {
+            if (inherit_list[j] == cand[i]) { dup_found = true; break; }
+        }
+        if (!dup_found) inherit_list[inherit_count++] = cand[i];
+    }
+
+    STARTUPINFOEXW siex;
     PROCESS_INFORMATION pi;
-    ZeroMemory(&si, sizeof(si));
+    ZeroMemory(&siex, sizeof(siex));
     ZeroMemory(&pi, sizeof(pi));
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = ensure_inheritable(io->h_in, &dup_in);
-    si.hStdOutput = ensure_inheritable(io->h_out, &dup_out);
-    si.hStdError = ensure_inheritable(io->h_err, &dup_err);
+    siex.StartupInfo.cb = sizeof(STARTUPINFOEXW);
+    siex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    siex.StartupInfo.hStdInput = h_in;
+    siex.StartupInfo.hStdOutput = h_out;
+    siex.StartupInfo.hStdError = h_err;
+
+    LPPROC_THREAD_ATTRIBUTE_LIST attr_list = NULL;
+    DWORD create_flags = 0;
+    if (inherit_count > 0) {
+        SIZE_T attr_sz = 0;
+        InitializeProcThreadAttributeList(NULL, 1, 0, &attr_sz);
+        if (attr_sz > 0) {
+            attr_list = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attr_sz);
+            if (attr_list && InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_sz)) {
+                if (UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                              inherit_list, inherit_count * sizeof(HANDLE), NULL, NULL)) {
+                    siex.lpAttributeList = attr_list;
+                    create_flags |= EXTENDED_STARTUPINFO_PRESENT;
+                }
+            }
+        }
+    }
 
     SetConsoleCtrlHandler(NULL, TRUE);
-    BOOL ok = CreateProcessW(exe_path, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
+    BOOL ok = CreateProcessW(exe_path, cmdline, NULL, NULL, TRUE, create_flags, NULL, NULL, &siex.StartupInfo, &pi);
+    if (!ok && (create_flags & EXTENDED_STARTUPINFO_PRESENT)) {
+        siex.StartupInfo.cb = sizeof(STARTUPINFOW);
+        siex.lpAttributeList = NULL;
+        ok = CreateProcessW(exe_path, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &siex.StartupInfo, &pi);
+    }
+    if (attr_list) {
+        DeleteProcThreadAttributeList(attr_list);
+        free(attr_list);
+    }
     free(cmdline);
     if (dup_in) CloseHandle(dup_in);
     if (dup_out) CloseHandle(dup_out);
@@ -272,9 +314,12 @@ static DWORD WINAPI pipe_lhs_thread(LPVOID param) {
 }
 
 static int eval_pipe(shell_ctx_t *ctx, const cmd_node_t *left, const cmd_node_t *right, const cmd_io_t *io) {
-    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
     HANDLE pr = NULL, pw = NULL;
-    if (!CreatePipe(&pr, &pw, &sa, 0)) return 1;
+    if (!CreatePipe(&pr, &pw, NULL, 0)) return 1;
+
+    /* Isolate env/CWD mutations inside pipe subshells */
+    size_t saved_locals = ctx->local_stack_len;
+    builtin_setlocal(ctx, L"", io);
 
     shell_ctx_t lhs_ctx = *ctx;
     lhs_ctx.dir_stack = NULL;
@@ -296,6 +341,7 @@ static int eval_pipe(shell_ctx_t *ctx, const cmd_node_t *left, const cmd_node_t 
     if (!th) {
         CloseHandle(pr);
         CloseHandle(pw);
+        builtins_pop_locals_to(ctx, saved_locals);
         return 1;
     }
 
@@ -306,6 +352,7 @@ static int eval_pipe(shell_ctx_t *ctx, const cmd_node_t *left, const cmd_node_t 
     CloseHandle(th);
     CloseHandle(pr);
     shell_ctx_free(&lhs_ctx);
+    builtins_pop_locals_to(ctx, saved_locals);
     ctx->last_exit_code = rc;
     return rc;
 }
@@ -349,19 +396,20 @@ static bool parse_batch_args_preserve_quotes(const wchar_t *tail, int *out_argc,
 }
 
 static int run_batch_lines(shell_ctx_t *ctx, const batch_lines_t *bl, size_t start_idx,
-                           const wchar_t *script_path, const wchar_t *raw_tail, const cmd_io_t *io) {
+                           const wchar_t *script_path, const wchar_t *arg0_override,
+                           const wchar_t *raw_tail, const cmd_io_t *io) {
     int argc = 0;
     wchar_t **argv = NULL;
     parse_batch_args_preserve_quotes(raw_tail, &argc, &argv);
 
-    /* Build argv with argv[0] = script_path */
+    /* Build argv with argv[0] = arg0_override ? arg0_override : script_path */
     int full_argc = argc + 1;
     wchar_t **full_argv = (wchar_t **)malloc((size_t)full_argc * sizeof(wchar_t *));
     if (!full_argv) {
         cmd_free_args(argc, argv);
         return 1;
     }
-    full_argv[0] = _wcsdup(script_path);
+    full_argv[0] = _wcsdup(arg0_override ? arg0_override : script_path);
     for (int i = 0; i < argc; i++) full_argv[i + 1] = argv[i];
     free(argv);
 
@@ -385,6 +433,7 @@ static int run_batch_lines(shell_ctx_t *ctx, const batch_lines_t *bl, size_t sta
 
         int paren_depth = 0;
         bool in_q = false;
+        bool prev_had_cont = false;
         while (idx < bl->count) {
             const wchar_t *ln = bl->lines[idx];
             const wchar_t *trimmed = cmd_skip_ws(ln);
@@ -402,10 +451,11 @@ static int run_batch_lines(shell_ctx_t *ctx, const batch_lines_t *bl, size_t sta
                 if (!ns) break;
                 stmt = ns;
             }
-            if (len > 0) stmt[len++] = L' ';
+            if (len > 0 && !prev_had_cont) stmt[len++] = L'\n';
             memcpy(stmt + len, ln, add_len * sizeof(wchar_t));
             len += add_len;
             stmt[len] = L'\0';
+            prev_had_cont = has_cont;
 
             for (size_t k = 0; k < add_len; k++) {
                 wchar_t c = ln[k];
@@ -456,7 +506,7 @@ static int run_batch_lines(shell_ctx_t *ctx, const batch_lines_t *bl, size_t sta
 
     builtins_pop_locals_to(ctx, frame.local_stack_base);
     ctx->batch_frame = frame.parent;
-    cmd_free_args(full_argc, full_argv);
+    cmd_free_args(frame.argc, frame.argv);
     if (frame.exit_batch) ctx->last_exit_code = frame.exit_code;
     return ctx->last_exit_code;
 }
@@ -552,7 +602,7 @@ int cmd_runtime_exec_batch_file(shell_ctx_t *ctx, const wchar_t *script_path,
     }
     const batch_lines_t *prev_bl = g_active_bl;
     g_active_bl = &bl;
-    int rc = run_batch_lines(ctx, &bl, 0, script_path, raw_tail, io);
+    int rc = run_batch_lines(ctx, &bl, 0, script_path, NULL, raw_tail, io);
     g_active_bl = prev_bl;
     free_batch_lines(&bl);
     return rc;
@@ -572,6 +622,9 @@ static int exec_call(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) 
         lbl[lbi] = L'\0';
         const wchar_t *args_tail = cmd_skip_ws(p);
 
+        wchar_t colon_lbl[260];
+        swprintf(colon_lbl, 260, L":%ls", lbl);
+
         for (size_t li = 0; li < g_active_bl->count; li++) {
             const wchar_t *lp = cmd_skip_ws(g_active_bl->lines[li]);
             if (lp[0] == L':' && lp[1] != L':') {
@@ -581,7 +634,7 @@ static int exec_call(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) 
                 while (*lp && !iswspace(*lp) && ci + 1 < 256) cur[ci++] = *lp++;
                 cur[ci] = L'\0';
                 if (_wcsicmp(cur, lbl) == 0) {
-                    return run_batch_lines(ctx, g_active_bl, li + 1, bf->script_path, args_tail, io);
+                    return run_batch_lines(ctx, g_active_bl, li + 1, bf->script_path, colon_lbl, args_tail, io);
                 }
             }
         }
@@ -592,7 +645,23 @@ static int exec_call(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) 
 
     /* Extract first token to see if it's a .bat/.cmd */
     wchar_t *exp = cmd_expand_percent(ctx, p, ctx->batch_frame != NULL);
-    int rc = exec_line_internal(ctx, exp ? exp : p, io, ctx->batch_frame != NULL, false);
+    const wchar_t *eff = exp ? exp : p;
+    cmd_resolution_t res;
+    resolver_classify_and_find(eff, &res);
+    if (res.kind == CMD_KIND_BATCH_SCRIPT) {
+        const wchar_t *tp = cmd_skip_ws(eff);
+        if (*tp == L'"') {
+            tp++;
+            while (*tp && *tp != L'"') tp++;
+            if (*tp == L'"') tp++;
+        } else {
+            while (*tp && !iswspace(*tp)) tp++;
+        }
+        int rc = cmd_runtime_exec_batch_file(ctx, res.resolved_path, tp, io);
+        free(exp);
+        return rc;
+    }
+    int rc = exec_line_internal(ctx, eff, io, ctx->batch_frame != NULL, false);
     free(exp);
     return rc;
 }
@@ -654,8 +723,19 @@ static int eval_simple(shell_ctx_t *ctx, const cmd_node_t *node, const cmd_io_t 
 
     if (_wcsicmp(clean_cmd, L"shift") == 0) {
         cmd_batch_frame_t *bf = (cmd_batch_frame_t *)ctx->batch_frame;
-        if (bf && bf->shift_offset + 1 < bf->argc) {
-            bf->shift_offset++;
+        if (bf) {
+            int start_idx = 0;
+            const wchar_t *ap = cmd_skip_ws(tail);
+            if (ap[0] == L'/' && ap[1] >= L'0' && ap[1] <= L'8') {
+                start_idx = ap[1] - L'0';
+            }
+            if (start_idx < bf->argc) {
+                free(bf->argv[start_idx]);
+                for (int i = start_idx; i + 1 < bf->argc; i++) {
+                    bf->argv[i] = bf->argv[i + 1];
+                }
+                bf->argc--;
+            }
         }
         rc = 0;
         goto done;
@@ -717,11 +797,26 @@ static int eval_if(shell_ctx_t *ctx, const cmd_node_t *node, const cmd_io_t *io)
 
     switch (node->u.if_stmt.cond) {
         case IF_COND_EXIST: {
-            WIN32_FIND_DATAW fd;
-            HANDLE hf = FindFirstFileW(lhs, &fd);
-            if (hf != INVALID_HANDLE_VALUE) {
-                FindClose(hf);
-                result = true;
+            size_t llen = wcslen(lhs);
+            if (llen > 3 && (lhs[llen - 1] == L'\\' || lhs[llen - 1] == L'/')) {
+                wchar_t *stripped = _wcsdup(lhs);
+                if (stripped) {
+                    while (llen > 3 && (stripped[llen - 1] == L'\\' || stripped[llen - 1] == L'/')) {
+                        stripped[--llen] = L'\0';
+                    }
+                    DWORD a = GetFileAttributesW(stripped);
+                    result = (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) != 0);
+                    free(stripped);
+                }
+            } else if (!wcschr(lhs, L'*') && !wcschr(lhs, L'?')) {
+                result = (GetFileAttributesW(lhs) != INVALID_FILE_ATTRIBUTES);
+            } else {
+                WIN32_FIND_DATAW fd;
+                HANDLE hf = FindFirstFileW(lhs, &fd);
+                if (hf != INVALID_HANDLE_VALUE) {
+                    FindClose(hf);
+                    result = true;
+                }
             }
             break;
         }
@@ -890,7 +985,7 @@ static int eval_for_f(shell_ctx_t *ctx, const cmd_node_t *node, const wchar_t *s
     int skip = 0;
     wchar_t delims[64] = L" \t";
     bool usebackq = false;
-    int tokens[16] = { 1 };
+    int tokens[32] = { 1 };
     int token_count = 1;
     bool star_rest = false;
 
@@ -900,12 +995,24 @@ static int eval_for_f(shell_ctx_t *ctx, const cmd_node_t *node, const wchar_t *s
             while (*op == L' ' || *op == L'\t') op++;
             if (!*op) break;
             if (_wcsnicmp(op, L"usebackq", 8) == 0) { usebackq = true; op += 8; }
-            else if (_wcsnicmp(op, L"eol=", 4) == 0) { eol = op[4]; op += 5; }
-            else if (_wcsnicmp(op, L"skip=", 5) == 0) { skip = _wtoi(op + 5); while (*op && !iswspace(*op)) op++; }
-            else if (_wcsnicmp(op, L"delims=", 7) == 0) {
+            else if (_wcsnicmp(op, L"eol=", 4) == 0) {
+                op += 4;
+                if (*op && !iswspace(*op)) { eol = *op; op++; }
+                else eol = L'\0';
+            } else if (_wcsnicmp(op, L"skip=", 5) == 0) {
+                skip = _wtoi(op + 5);
+                while (*op && !iswspace(*op)) op++;
+            } else if (_wcsnicmp(op, L"delims=", 7) == 0) {
                 op += 7;
                 size_t di = 0;
-                while (*op && !iswspace(*op) && di + 1 < 64) delims[di++] = *op++;
+                while (*op && di + 1 < 64) {
+                    if (_wcsnicmp(op, L"eol=", 4) == 0 || _wcsnicmp(op, L"skip=", 5) == 0 ||
+                        _wcsnicmp(op, L"tokens=", 7) == 0 || _wcsnicmp(op, L"usebackq", 8) == 0) {
+                        break;
+                    }
+                    delims[di++] = *op++;
+                }
+                while (di > 0 && (delims[di - 1] == L' ' || delims[di - 1] == L'\t')) di--;
                 delims[di] = L'\0';
             } else if (_wcsnicmp(op, L"tokens=", 7) == 0) {
                 op += 7;
@@ -913,9 +1020,19 @@ static int eval_for_f(shell_ctx_t *ctx, const cmd_node_t *node, const wchar_t *s
                 star_rest = false;
                 while (*op && !iswspace(*op)) {
                     if (*op == L'*') { star_rest = true; op++; break; }
-                    if (iswdigit(*op) && token_count < 16) {
-                        tokens[token_count++] = _wtoi(op);
+                    if (iswdigit(*op) && token_count < 32) {
+                        int a = _wtoi(op);
                         while (iswdigit(*op)) op++;
+                        if (*op == L'-' && iswdigit(op[1])) {
+                            op++;
+                            int b = _wtoi(op);
+                            while (iswdigit(*op)) op++;
+                            for (int x = a; x <= b && token_count < 32; x++) {
+                                tokens[token_count++] = x;
+                            }
+                        } else {
+                            tokens[token_count++] = a;
+                        }
                     }
                     if (*op == L',') op++;
                     else if (*op != L'*' && !iswdigit(*op)) break;
@@ -1006,33 +1123,38 @@ static int eval_for_f(shell_ctx_t *ctx, const cmd_node_t *node, const wchar_t *s
         if (ln[0] == L'\0' || (eol && ln[0] == eol)) { free(ln); continue; }
 
         /* Tokenize line by delims */
-        const wchar_t *vals[17] = { 0 };
-        wchar_t *dups[17] = { 0 };
-        const wchar_t *lp = ln;
-        int max_tok = tokens[token_count - 1];
-        for (int ti = 1; ti <= max_tok + (star_rest ? 1 : 0); ti++) {
-            while (*lp && wcschr(delims, *lp)) lp++;
-            if (!*lp) break;
-            if (ti == max_tok + 1 && star_rest) {
-                dups[token_count] = _wcsdup(lp);
-                vals[token_count] = dups[token_count];
-                break;
-            }
-            const wchar_t *ts = lp;
-            while (*lp && !wcschr(delims, *lp)) lp++;
-            size_t tlen = (size_t)(lp - ts);
-            for (int k = 0; k < token_count; k++) {
-                if (tokens[k] == ti) {
-                    dups[k] = (wchar_t *)malloc((tlen + 1) * sizeof(wchar_t));
-                    if (dups[k]) { memcpy(dups[k], ts, tlen * sizeof(wchar_t)); dups[k][tlen] = L'\0'; }
-                    vals[k] = dups[k];
+        const wchar_t *vals[33] = { 0 };
+        wchar_t *dups[33] = { 0 };
+        if (delims[0] == L'\0') {
+            dups[0] = _wcsdup(ln);
+            vals[0] = dups[0];
+        } else {
+            const wchar_t *lp = ln;
+            int max_tok = tokens[token_count - 1];
+            for (int ti = 1; ti <= max_tok + (star_rest ? 1 : 0); ti++) {
+                while (*lp && wcschr(delims, *lp)) lp++;
+                if (!*lp) break;
+                if (ti == max_tok + 1 && star_rest) {
+                    dups[token_count] = _wcsdup(lp);
+                    vals[token_count] = dups[token_count];
+                    break;
+                }
+                const wchar_t *ts = lp;
+                while (*lp && !wcschr(delims, *lp)) lp++;
+                size_t tlen = (size_t)(lp - ts);
+                for (int k = 0; k < token_count; k++) {
+                    if (tokens[k] == ti) {
+                        dups[k] = (wchar_t *)malloc((tlen + 1) * sizeof(wchar_t));
+                        if (dups[k]) { memcpy(dups[k], ts, tlen * sizeof(wchar_t)); dups[k][tlen] = L'\0'; }
+                        vals[k] = dups[k];
+                    }
                 }
             }
         }
 
         if (vals[0]) {
             int total_bind = token_count + (star_rest ? 1 : 0);
-            cmd_for_var_t frames[17];
+            cmd_for_var_t frames[33];
             cmd_for_var_t *prev = (cmd_for_var_t *)ctx->for_vars;
             for (int k = 0; k < total_bind; k++) {
                 frames[k].letter = (wchar_t)(node->u.for_stmt.var_char + k);
@@ -1044,7 +1166,7 @@ static int eval_for_f(shell_ctx_t *ctx, const cmd_node_t *node, const wchar_t *s
             eval_node(ctx, node->u.for_stmt.body, io);
             ctx->for_vars = frames[0].prev;
         }
-        for (int k = 0; k < 17; k++) free(dups[k]);
+        for (int k = 0; k < 33; k++) free(dups[k]);
         free(ln);
     }
     free(text_w);

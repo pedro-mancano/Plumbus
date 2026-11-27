@@ -333,7 +333,7 @@ int builtin_type(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     return rc;
 }
 
-static bool copy_concat(const wchar_t *src_list, const wchar_t *dst_path) {
+static bool copy_concat(const wchar_t *src_list, const wchar_t *dst_path, bool binary_mode) {
     HANDLE out = CreateFileW(dst_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (out == INVALID_HANDLE_VALUE) return false;
     wchar_t *dup = _wcsdup(src_list);
@@ -352,6 +352,11 @@ static bool copy_concat(const wchar_t *src_list, const wchar_t *dst_path) {
         CloseHandle(in);
         if (!ok) break;
     }
+    if (ok && !binary_mode) {
+        char eof_sub = 0x1A;
+        DWORD wr = 0;
+        WriteFile(out, &eof_sub, 1, &wr, NULL);
+    }
     free(dup);
     CloseHandle(out);
     return ok;
@@ -366,9 +371,12 @@ int builtin_copy(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     const wchar_t *pos_args[4] = { NULL, NULL, NULL, NULL };
     int pos_n = 0;
     bool fail_if_exists = false;
+    bool binary_mode = false;
     for (int i = 0; i < argc; i++) {
         if (_wcsicmp(argv[i], L"/y") == 0) fail_if_exists = false;
         else if (_wcsicmp(argv[i], L"/-y") == 0) fail_if_exists = true;
+        else if (_wcsicmp(argv[i], L"/b") == 0) binary_mode = true;
+        else if (_wcsicmp(argv[i], L"/a") == 0) binary_mode = false;
         else if (argv[i][0] == L'/') continue;
         else if (pos_n < 4) pos_args[pos_n++] = argv[i];
     }
@@ -383,7 +391,7 @@ int builtin_copy(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     const wchar_t *dst = (pos_n >= 2) ? pos_args[1] : L".";
 
     if (wcschr(src, L'+') && pos_n >= 2) {
-        bool ok = copy_concat(src, dst);
+        bool ok = copy_concat(src, dst, binary_mode);
         cmd_free_args(argc, argv);
         if (ok) {
             cmd_io_write_sz(io->h_out, L"        1 file(s) copied.\r\n");
@@ -481,6 +489,62 @@ int builtin_move(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     return (moved > 0) ? 0 : 1;
 }
 
+static void apply_ren_wildcard(const wchar_t *src_name, const wchar_t *dst_mask, wchar_t *out, size_t cap) {
+    if (!wcschr(dst_mask, L'*') && !wcschr(dst_mask, L'?')) {
+        wcsncpy(out, dst_mask, cap - 1);
+        out[cap - 1] = L'\0';
+        return;
+    }
+    const wchar_t *sdot = wcsrchr(src_name, L'.');
+    const wchar_t *ddot = wcsrchr(dst_mask, L'.');
+
+    wchar_t s_stem[MAX_PATH] = { 0 }, s_ext[MAX_PATH] = { 0 };
+    if (sdot) {
+        size_t n = (size_t)(sdot - src_name);
+        if (n >= MAX_PATH) n = MAX_PATH - 1;
+        memcpy(s_stem, src_name, n * sizeof(wchar_t));
+        wcsncpy(s_ext, sdot + 1, MAX_PATH - 1);
+    } else {
+        wcsncpy(s_stem, src_name, MAX_PATH - 1);
+    }
+
+    wchar_t d_stem[MAX_PATH] = { 0 }, d_ext[MAX_PATH] = { 0 };
+    if (ddot) {
+        size_t n = (size_t)(ddot - dst_mask);
+        if (n >= MAX_PATH) n = MAX_PATH - 1;
+        memcpy(d_stem, dst_mask, n * sizeof(wchar_t));
+        wcsncpy(d_ext, ddot + 1, MAX_PATH - 1);
+    } else {
+        wcsncpy(d_stem, dst_mask, MAX_PATH - 1);
+    }
+
+    size_t oi = 0;
+    for (size_t i = 0; d_stem[i] && oi + 1 < cap; i++) {
+        if (d_stem[i] == L'*') {
+            for (size_t j = 0; s_stem[j] && oi + 1 < cap; j++) out[oi++] = s_stem[j];
+            break;
+        } else if (d_stem[i] == L'?') {
+            if (i < wcslen(s_stem)) out[oi++] = s_stem[i];
+        } else {
+            out[oi++] = d_stem[i];
+        }
+    }
+    if (ddot && oi + 1 < cap) {
+        out[oi++] = L'.';
+        for (size_t i = 0; d_ext[i] && oi + 1 < cap; i++) {
+            if (d_ext[i] == L'*') {
+                for (size_t j = 0; s_ext[j] && oi + 1 < cap; j++) out[oi++] = s_ext[j];
+                break;
+            } else if (d_ext[i] == L'?') {
+                if (i < wcslen(s_ext)) out[oi++] = s_ext[i];
+            } else {
+                out[oi++] = d_ext[i];
+            }
+        }
+    }
+    out[oi] = L'\0';
+}
+
 int builtin_ren(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     (void)ctx;
     int argc = 0;
@@ -492,6 +556,30 @@ int builtin_ren(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
     }
     wchar_t src_dir[MAX_PATH * 4];
     split_dir_part(argv[0], src_dir, sizeof(src_dir) / sizeof(src_dir[0]));
+
+    if (wcschr(argv[0], L'*') || wcschr(argv[0], L'?')) {
+        WIN32_FIND_DATAW fd;
+        HANDLE hf = FindFirstFileW(argv[0], &fd);
+        if (hf == INVALID_HANDLE_VALUE) {
+            cmd_free_args(argc, argv);
+            cmd_io_write_sz(io->h_err, L"The system cannot find the file specified.\r\n");
+            return 1;
+        }
+        int ok_cnt = 0;
+        do {
+            if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+            wchar_t new_name[MAX_PATH];
+            apply_ren_wildcard(fd.cFileName, argv[1], new_name, MAX_PATH);
+            wchar_t sfull[MAX_PATH * 4], dfull[MAX_PATH * 4];
+            swprintf(sfull, sizeof(sfull) / sizeof(sfull[0]), L"%ls%ls", src_dir, fd.cFileName);
+            swprintf(dfull, sizeof(dfull) / sizeof(dfull[0]), L"%ls%ls", src_dir, new_name);
+            if (MoveFileW(sfull, dfull)) ok_cnt++;
+        } while (FindNextFileW(hf, &fd));
+        FindClose(hf);
+        cmd_free_args(argc, argv);
+        return (ok_cnt > 0) ? 0 : 1;
+    }
+
     wchar_t dfull[MAX_PATH * 4];
     swprintf(dfull, sizeof(dfull) / sizeof(dfull[0]), L"%ls%ls", src_dir, argv[1]);
     BOOL ok = MoveFileW(argv[0], dfull);

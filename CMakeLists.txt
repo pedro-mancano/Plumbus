@@ -162,3 +162,16 @@ if(MSVC)
     target_link_options(test_exec_edge_cases PRIVATE /SUBSYSTEM:CONSOLE)
 endif()
 add_test(NAME test_exec_edge_cases COMMAND test_exec_edge_cases)
+
+add_executable(test_cmd_parity tests/test_cmd_parity.c)
+target_include_directories(test_cmd_parity PRIVATE "${CMAKE_SOURCE_DIR}/tests")
+target_link_libraries(test_cmd_parity PRIVATE plumbus_core)
+target_compile_definitions(test_cmd_parity PRIVATE
+    PLUMBUS_EXE_PATH=L"$<TARGET_FILE:plumbus>"
+    PLUMBUS_BACKUP_CMD_PATH=L"${CMAKE_SOURCE_DIR}/backup/cmd.exe"
+    PLUMBUS_TEST_SANDBOX_DIR=L"${CMAKE_BINARY_DIR}/test_sandbox"
+)
+if(MSVC)
+    target_link_options(test_cmd_parity PRIVATE /SUBSYSTEM:CONSOLE)
+endif()
+add_test(NAME test_cmd_parity COMMAND test_cmd_parity)

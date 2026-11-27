@@ -22,8 +22,16 @@ static void set_parse_err(parser_t *p, const wchar_t *msg) {
     }
 }
 
+static bool is_hws(wchar_t c) {
+    return c == L' ' || c == L'\t';
+}
+
 static bool is_ws(wchar_t c) {
     return c == L' ' || c == L'\t' || c == L'\r' || c == L'\n';
+}
+
+static void skip_hws(parser_t *p) {
+    while (is_hws(p->src[p->pos])) p->pos++;
 }
 
 static void skip_ws(parser_t *p) {
@@ -449,6 +457,7 @@ static cmd_node_t *parse_simple(parser_t *p) {
          (p->src[p->pos + 3] == L'\0' || is_ws(p->src[p->pos + 3]) ||
           p->src[p->pos + 3] == L'.' || p->src[p->pos + 3] == L':' || p->src[p->pos + 3] == L'/'))) {
         while (p->src[p->pos]) {
+            if (p->src[p->pos] == L'\r' || p->src[p->pos] == L'\n') break;
             if (p->paren_depth > 0 && p->src[p->pos] == L')') break;
             p->pos++;
         }
@@ -471,7 +480,7 @@ static cmd_node_t *parse_simple(parser_t *p) {
             continue;
         }
         if (!in_q) {
-            if (c == L'&' || c == L'|') break;
+            if (c == L'&' || c == L'|' || c == L'\r' || c == L'\n') break;
             if (p->paren_depth > 0 && c == L')') break;
             /* Check redirection: <, >, or [0-9][<>] */
             if (c == L'<' || c == L'>' ||
@@ -498,7 +507,7 @@ static cmd_node_t *parse_simple(parser_t *p) {
         raw[len++] = c;
         p->pos++;
     }
-    while (len > 0 && is_ws(raw[len - 1])) len--;
+    while (len > 0 && (raw[len - 1] == L'\r' || raw[len - 1] == L'\n')) len--;
     raw[len] = L'\0';
 
     if (len == 0 && !redirs) {
@@ -592,7 +601,7 @@ static cmd_node_t *parse_pipe(parser_t *p) {
     if (p->has_error || !left) return left;
 
     for (;;) {
-        skip_ws(p);
+        skip_hws(p);
         if (p->src[p->pos] == L'|' && p->src[p->pos + 1] != L'|') {
             p->pos++;
             cmd_node_t *right = parse_stmt(p);
@@ -618,7 +627,7 @@ static cmd_node_t *parse_and_or(parser_t *p) {
     if (p->has_error || !left) return left;
 
     for (;;) {
-        skip_ws(p);
+        skip_hws(p);
         cmd_node_kind_t k;
         if (p->src[p->pos] == L'&' && p->src[p->pos + 1] == L'&') {
             k = CMD_NODE_AND;
@@ -649,12 +658,14 @@ static cmd_node_t *parse_seq(parser_t *p) {
     if (p->has_error || !left) return left;
 
     for (;;) {
-        skip_ws(p);
-        if (p->src[p->pos] == L'&' && p->src[p->pos + 1] != L'&') {
-            p->pos++;
+        skip_hws(p);
+        bool is_amp = (p->src[p->pos] == L'&' && p->src[p->pos + 1] != L'&');
+        bool is_nl = (p->paren_depth > 0 && (p->src[p->pos] == L'\n' || p->src[p->pos] == L'\r'));
+        if (is_amp || is_nl) {
+            if (is_amp) p->pos++;
             skip_ws(p);
             if (!p->src[p->pos] || (p->paren_depth > 0 && p->src[p->pos] == L')')) {
-                break; /* trailing & */
+                break; /* trailing & or newline before ) */
             }
             cmd_node_t *right = parse_and_or(p);
             if (p->has_error || !right) {

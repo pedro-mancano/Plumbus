@@ -325,11 +325,17 @@ int builtin_set(shell_ctx_t *ctx, const wchar_t *tail, const cmd_io_t *io) {
 
     wchar_t *work = _wcsdup(p);
     if (!work) return 1;
-    cmd_trim_trailing_ws(work);
-    cmd_strip_outer_quotes(work);
+    if (work[0] == L'"') {
+        wchar_t *last_q = wcsrchr(work + 1, L'"');
+        if (last_q) {
+            *last_q = L'\0';
+            memmove(work, work + 1, (size_t)(last_q - work) * sizeof(wchar_t));
+        }
+    }
 
     wchar_t *eq = wcschr(work, L'=');
     if (!eq) {
+        cmd_trim_trailing_ws(work);
         int rc = list_env_vars(work, io);
         free(work);
         return rc;
