@@ -9,6 +9,7 @@ typedef enum {
     CMD_MODE_EXEC_EXIT,      /* /c */
     CMD_MODE_EXEC_KEEP,      /* /k */
     CMD_MODE_HELP,           /* /? */
+    CMD_MODE_CONFIG,         /* config */
     CMD_MODE_INTERNAL_SYNC,  /* --__sync-state <file> <exitcode> */
     CMD_MODE_BENCH_INIT      /* --__bench-init */
 } cmd_mode_t;

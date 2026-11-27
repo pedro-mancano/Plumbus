@@ -128,3 +128,15 @@ if(MSVC)
     target_link_options(test_integration PRIVATE /SUBSYSTEM:CONSOLE)
 endif()
 add_test(NAME test_integration COMMAND test_integration)
+
+add_executable(test_tui_integration tests/test_tui_integration.c)
+target_include_directories(test_tui_integration PRIVATE "${CMAKE_SOURCE_DIR}/tests")
+target_link_libraries(test_tui_integration PRIVATE plumbus_core)
+target_compile_definitions(test_tui_integration PRIVATE
+    PLUMBUS_EXE_PATH=L"$<TARGET_FILE:plumbus>"
+    PLUMBUS_TEST_SANDBOX_DIR=L"${CMAKE_BINARY_DIR}/test_sandbox"
+)
+if(MSVC)
+    target_link_options(test_tui_integration PRIVATE /SUBSYSTEM:CONSOLE)
+endif()
+add_test(NAME test_tui_integration COMMAND test_tui_integration)

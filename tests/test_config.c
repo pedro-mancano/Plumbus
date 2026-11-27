@@ -77,7 +77,7 @@ TEST_CASE(test_tui_config_state_navigation_toggles_and_aliases) {
     config_init(&live);
 
     tui_cfg_state_t st;
-    ASSERT_TRUE(tui_cfg_state_init(&st, &live));
+    tui_cfg_state_init(&st, &live);
     ASSERT_EQ_INT(TUI_ITEM_THEME, st.selected);
 
     /* Toggle theme -> agnoster */

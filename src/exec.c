@@ -383,9 +383,17 @@ static bool try_exec_shell_builtin(shell_ctx_t *ctx, const wchar_t *p) {
     plumbus_config_t *cfg = (plumbus_config_t *)ctx->config_ptr;
     if (!cfg) return false;
 
-    bool is_plumbus_cfg = (_wcsnicmp(p, L"plumbus", 7) == 0 && (p[7] == L' ' || p[7] == L'\t') &&
-                           _wcsicmp(skip_ws(p + 7), L"config") == 0);
-    bool is_bare_cfg = (_wcsicmp(p, L"config") == 0 && !cwd_has_config_command());
+    wchar_t trimmed[512];
+    wcsncpy(trimmed, p, 511);
+    trimmed[511] = L'\0';
+    trim_trailing_ws(trimmed);
+
+    bool is_plumbus_cfg =
+        (_wcsnicmp(trimmed, L"plumbus", 7) == 0 && (trimmed[7] == L' ' || trimmed[7] == L'\t') &&
+         _wcsicmp(skip_ws(trimmed + 7), L"config") == 0) ||
+        (_wcsnicmp(trimmed, L"plumbus.exe", 11) == 0 && (trimmed[11] == L' ' || trimmed[11] == L'\t') &&
+         _wcsicmp(skip_ws(trimmed + 11), L"config") == 0);
+    bool is_bare_cfg = (_wcsicmp(trimmed, L"config") == 0 && !cwd_has_config_command());
     if (is_plumbus_cfg || is_bare_cfg) {
         wchar_t cwd[MAX_PATH * 4];
         if (GetCurrentDirectoryW((DWORD)(sizeof(cwd) / sizeof(cwd[0])), cwd) == 0) wcscpy(cwd, L"~");

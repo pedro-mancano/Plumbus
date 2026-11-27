@@ -139,13 +139,18 @@ void line_buf_kill_to_end(line_buf_t *lb) {
     lb->buf[lb->len] = L'\0';
 }
 
-static void redraw_line(const wchar_t *prompt_ansi,
-                        size_t prompt_visible_len,
-                        const line_buf_t *lb,
-                        const wchar_t *ghost,
-                        bool enable_highlight,
-                        highlight_alias_lookup_fn alias_fn,
-                        void *alias_user_data) {
+bool line_editor_is_config_shortcut(unsigned short vk, wchar_t ch, unsigned long ctrl_key_state) {
+    bool ctrl = (ctrl_key_state & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+    return vk == VK_F2 || (ctrl && (vk == VK_OEM_COMMA || ch == L','));
+}
+
+wchar_t *line_editor_format_frame(const wchar_t *prompt_ansi,
+                                  size_t prompt_visible_len,
+                                  const line_buf_t *lb,
+                                  const wchar_t *ghost,
+                                  bool enable_highlight,
+                                  highlight_alias_lookup_fn alias_fn,
+                                  void *alias_user_data) {
     wchar_t *colored = enable_highlight
         ? highlight_render_line(lb->buf, ghost, alias_fn, alias_user_data)
         : NULL;
@@ -155,7 +160,7 @@ static void redraw_line(const wchar_t *prompt_ansi,
     wchar_t *frame = (wchar_t *)malloc(total_cap * sizeof(wchar_t));
     if (!frame) {
         free(colored);
-        return;
+        return NULL;
     }
 
     size_t target_col = prompt_visible_len + lb->cursor + 1;
@@ -166,9 +171,22 @@ static void redraw_line(const wchar_t *prompt_ansi,
         swprintf(frame, total_cap, L"\r%ls%ls\x1b[K\r\x1b[%zuG",
                  prompt_ansi, body, target_col);
     }
+    free(colored);
+    return frame;
+}
+
+static void redraw_line(const wchar_t *prompt_ansi,
+                        size_t prompt_visible_len,
+                        const line_buf_t *lb,
+                        const wchar_t *ghost,
+                        bool enable_highlight,
+                        highlight_alias_lookup_fn alias_fn,
+                        void *alias_user_data) {
+    wchar_t *frame = line_editor_format_frame(prompt_ansi, prompt_visible_len, lb, ghost,
+                                              enable_highlight, alias_fn, alias_user_data);
+    if (!frame) return;
     console_write_w(frame, wcslen(frame));
     free(frame);
-    free(colored);
 }
 
 static void redraw_reverse_search(const line_buf_t *query, const wchar_t *match) {
@@ -239,7 +257,7 @@ line_read_status_t line_editor_read(const wchar_t *prompt_ansi,
         bool shift = (ke->dwControlKeyState & SHIFT_PRESSED) != 0;
 
         /* F2 or Ctrl+, opens Plumbus Configurator preserving current line buffer */
-        if (cfg_cb && (vk == VK_F2 || (ctrl && (vk == VK_OEM_COMMA || ch == L',')))) {
+        if (cfg_cb && line_editor_is_config_shortcut(vk, ch, ke->dwControlKeyState)) {
             wchar_t *new_p = NULL;
             size_t new_vis = cur_pvis;
             if (cfg_cb(cfg_user_data, &new_p, &new_vis, &hl_on, &ghost_on) && new_p) {
@@ -308,6 +326,7 @@ line_read_status_t line_editor_read(const wchar_t *prompt_ansi,
         }
 
         if (vk == VK_RETURN || ch == L'\r') {
+            redraw_line(cur_prompt, cur_pvis, &lb, NULL, hl_on, alias_fn, alias_user_data);
             console_write_w(L"\r\n", 2);
             status = LINE_READ_OK;
             break;

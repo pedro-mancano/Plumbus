@@ -203,6 +203,14 @@ bool cmdline_parse(const wchar_t *raw_cmdline, cmd_options_t *out_opts) {
         }
 
         if (*p != L'/') {
+            if (match_ci_prefix(p, L"config")) {
+                const wchar_t *after = p + 6;
+                while (is_space_w(*after)) after++;
+                if (*after == L'\0') {
+                    out_opts->mode = CMD_MODE_CONFIG;
+                    return true;
+                }
+            }
             /* Unknown non-switch token before /c or /k: stop switch parsing */
             break;
         }

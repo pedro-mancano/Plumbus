@@ -84,6 +84,17 @@ TEST_CASE(test_cmdline_k_u_a_help_and_sync) {
     cmdline_free(&o);
 }
 
+TEST_CASE(test_cmdline_config_subcommand) {
+    cmd_options_t o;
+    ASSERT_TRUE(cmdline_parse(L"plumbus.exe config", &o));
+    ASSERT_EQ_INT(CMD_MODE_CONFIG, o.mode);
+    cmdline_free(&o);
+
+    ASSERT_TRUE(cmdline_parse(L"\"C:\\Tools\\plumbus.exe\" /d config   ", &o));
+    ASSERT_EQ_INT(CMD_MODE_CONFIG, o.mode);
+    cmdline_free(&o);
+}
+
 int wmain(void) {
     RUN_TEST(test_cmdline_basic_c_flag);
     RUN_TEST(test_cmdline_glued_and_case_flags);
@@ -91,5 +102,6 @@ int wmain(void) {
     RUN_TEST(test_cmdline_slash_s_forces_strip);
     RUN_TEST(test_cmdline_two_quotes_existing_exe_preserved);
     RUN_TEST(test_cmdline_k_u_a_help_and_sync);
+    RUN_TEST(test_cmdline_config_subcommand);
     TEST_SUMMARY();
 }

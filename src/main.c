@@ -136,6 +136,24 @@ int wmain(void) {
 
     bool interactive_stdin = proxy_is_stdin_interactive();
 
+    if (opts.mode == CMD_MODE_CONFIG) {
+        plumbus_config_t cfg;
+        config_init(&cfg);
+        config_load_rc(&cfg);
+        wchar_t cwd[MAX_PATH * 4];
+        if (GetCurrentDirectoryW((DWORD)(sizeof(cwd) / sizeof(cwd[0])), cwd) == 0) wcscpy(cwd, L"~");
+        git_status_t git_st = { 0 };
+        if (cfg.git_status) git_native_inspect(cwd, &git_st);
+        console_state_t con;
+        console_init(&con);
+        console_enter_raw(&con);
+        tui_cfg_run(&cfg, cwd, 0, &git_st);
+        console_restore(&con);
+        config_free(&cfg);
+        cmdline_free(&opts);
+        return 0;
+    }
+
     if (opts.mode == CMD_MODE_EXEC_EXIT ||
         opts.mode == CMD_MODE_HELP ||
         !interactive_stdin) {

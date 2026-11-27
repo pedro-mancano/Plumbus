@@ -45,6 +45,16 @@ typedef bool (*line_editor_config_cb_fn)(void *user_data,
                                          bool *out_enable_hl,
                                          bool *out_enable_ghost);
 
+bool line_editor_is_config_shortcut(unsigned short vk, wchar_t ch, unsigned long ctrl_key_state);
+
+wchar_t *line_editor_format_frame(const wchar_t *prompt_ansi,
+                                  size_t prompt_visible_len,
+                                  const line_buf_t *lb,
+                                  const wchar_t *ghost,
+                                  bool enable_highlight,
+                                  highlight_alias_lookup_fn alias_fn,
+                                  void *alias_user_data);
+
 line_read_status_t line_editor_read(const wchar_t *prompt_ansi,
                                     size_t prompt_visible_len,
                                     history_t *hist,
