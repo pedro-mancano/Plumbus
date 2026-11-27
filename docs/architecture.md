@@ -1,51 +1,77 @@
 # Arquitetura do Plumbus
 
-## Visão Geral
-O **Plumbus** é um shell Windows escrito estritamente em **C17** (`wchar_t` / Win32 `W` APIs), linkado estaticamente com a CRT (`/MT`) para produzir um único executável `< 500 KB` sem DLLs externas.
-
-```text
-GetCommandLineW()
-   │
-   ▼
-cmdline_parse() ──► [--__sync-state] ──► state_sync_write_current()
-   │
-   ▼
-backend_resolve_cmd() + anti-recursão física (GetFileInformationByHandle)
-   │
-   ├──► (/c, /?, stdin redirecionado) ──► proxy_delegate_raw()
-   │
-   └──► (Console interativo / /k híbrido)
-           │
-           ▼
-        REPL TUI (line_editor + highlight + completion + history + git_native + prompt)
-           │
-           ▼
-        exec_interactive_line()
-           ├──► Built-ins (plumbus config, alias, unalias, theme)
-           ├──► Fast-path nativo (cd, X:, pushd, popd, exit)
-           ├──► .exe/.com direto (CreateProcessW)
-           └──► Internos / .bat / compostos ──► Sync Bridge (/v:off + --__sync-state)
-```
+O **Plumbus** é estruturado em módulos independentes escritos em **C17 puro** (`wchar_t` + Win32 API `W`), sem alocadores externos ou runtime dinâmico.
 
 ---
 
-## Módulos (`src/`)
+## 1. Fluxo de Execução e Proxy Híbrido
+
+```text
+GetCommandLineW()
+       │
+       ▼
+  cmdline_parse()
+   ├── --__sync-state   ──▶ state_sync_write_current() (helper binário UTF-16LE)
+   ├── --__bench-init   ──▶ exit(0) (benchmark de cold start)
+   ├── /c | /? | pipe   ──▶ proxy_delegate_raw(backend_cmd, raw_after_exe)
+   └── console interativo (ou /k em console)
+           │
+           ├── autorun_read_combined() (HKLM -> HKCU, suprimido por /d)
+           ├── config_load_rc() (%USERPROFILE%\.cmdrc)
+           └── REPL TUI (git_native -> prompt_render -> line_editor_read -> exec)
+```
+
+### Proteção Anti-Recursão (`src/backend.c`)
+Antes de qualquer delegação, `backend_resolve_cmd()` resolve o backend nesta ordem:
+1. `PLUMBUS_CMD_BACKEND` (override explícito para testes)
+2. `./backup/cmd.exe` (apenas quando compilado com `DEV_USE_LOCAL_BACKUP=ON`)
+3. `GetSystemDirectoryW() + "\cmd.exe"` (produção, somente leitura/execução)
+
+Em seguida, compara `GetModuleFileNameW(NULL)` com o backend via `GetFileInformationByHandle()` (`dwVolumeSerialNumber` + `nFileIndexHigh/Low`), bloqueando imediatamente (`BACKEND_ERR_SELF_LOOP`) qualquer tentativa de auto-invocação recursiva — mesmo via `%ComSpec%`, caminhos 8.3, symlinks ou hardlinks.
+
+---
+
+## 2. Ponte de Sincronização de Estado (`src/state_sync.c` + `src/exec.c`)
+
+Comandos externos (`.exe`/`.com`) sem metacaracteres rodam via `CreateProcessW()` direto, e `cd`/`pushd`/`popd`/`X:`/`exit` rodam em fast-path nativo em C.
+
+Para comandos internos do CMD (`set`, `dir`, `copy`, etc.), compostos (`|`, `&&`, `>`) e scripts `.bat`/`.cmd` (como `vcvarsall.bat`):
+1. O Plumbus executa o backend com `/d /q /c` preservando os handles reais do console (`CONIN$`/`CONOUT$`).
+2. Para `.bat`/`.cmd`, prefixa `call` automaticamente para capturar retorno após `exit /b N`.
+3. Encadeia ao final `& call "<plumbus.exe>" --__sync-state "<tmp.bin>" ^%ERRORLEVEL^%` (mantendo `/v:off` padrão para não corromper strings com `!`).
+4. O helper `--__sync-state` grava um blob binário UTF-16LE (`magic 0x504C5359`, `exit_code`, `GetCurrentDirectoryW()`, `GetEnvironmentStringsW()`).
+5. O processo pai lê e deleta o arquivo temporário, aplica `SetCurrentDirectoryW()` e faz diff atômico de ambiente via `SetEnvironmentVariableW()` (preservando variáveis de drive `=C:` e **nunca** criando variável literal `ERRORLEVEL`).
+
+---
+
+## 3. Parser Git Nativo em C (`src/git_native.c`)
+
+Sem nunca chamar `git.exe`, `git_native_inspect()`:
+1. Sobe a árvore de diretórios procurando `.git` (pasta ou arquivo `gitdir:` de worktree/submodule).
+2. Lê `.git/HEAD` para extrair a branch (`ref: refs/heads/...`) ou hash curto de 7 caracteres em *detached HEAD*.
+3. Faz parse binário de `.git/index` (`DIRC` v2, v3 e v4 com prefix compression) e indexa caminhos em tabela hash aberta.
+4. Verifica modificações/exclusões via `GetFileAttributesExW()` (tamanho e `mtime`).
+5. Carrega `.gitignore` e `.git/info/exclude` e varre o repositório com `FindFirstFileW`/`FindNextFileW` para detectar arquivos não rastreados.
+
+---
+
+## 4. Mapa de Módulos (`src/`)
 
 | Módulo | Responsabilidade |
 |---|---|
-| `cmdline.c` | Parser bruto sobre `GetCommandLineW()` preservando regras exatas de aspas (`/c`, `/k`, `/s`) |
-| `backend.c` | Resolução do backend (`PLUMBUS_CMD_BACKEND` -> `./backup/cmd.exe` em dev -> `System32\cmd.exe` em prod) e proteção anti-loop |
-| `autorun.c` | Leitura `KEY_READ` de `AutoRun` em `HKLM` e `HKCU` (suprimido com `/d`) |
-| `proxy.c` | Detecção de console interativo (`GetConsoleMode`) e delegação transparente de handles + `ExitCode` |
-| `resolver.c` | Precedência `aliases -> internos CMD -> CWD -> %PATH% × %PATHEXT%` e classificação de comandos |
-| `state_sync.c` | Protocolo binário UTF-16LE (`magic 0x504C5359`) para sincronizar `CWD`, `GetEnvironmentStringsW()` (incluindo `=X:`) e `ExitCode` |
-| `exec.c` | Executor híbrido + expansão de `%ERRORLEVEL%` entre comandos interativos |
-| `console.c` | Gerenciamento de modos raw/cooked e `ENABLE_VIRTUAL_TERMINAL_PROCESSING` |
-| `history.c` | Histórico UTF-8 em `%LocalAppData%\plumbus\history`, *ghost text* e busca reversa (`Ctrl+R`) |
-| `completion.c` | Autocompletar cíclico para arquivos/pastas, `%VAR%` e subcomandos `git` |
-| `highlight.c` | Colorização ANSI 24-bit em tempo real |
-| `line_editor.c` | Editor de linha desacoplado (`line_buf_t` + `ReadConsoleInputW`) com suporte a `F2` / `Ctrl+,` |
-| `git_native.c` | Parser Git em C puro (`HEAD`, `DIRC` v2/v3/v4, `.gitignore`, `GetFileAttributesExW`, `FindFirstFileW`) |
-| `config.c` | Leitura e gravação (`config_save`) de `%USERPROFILE%\.cmdrc` |
-| `prompt.c` | Temas `robbyrussell` e `agnoster`, abreviação `~` e largura visível CSI |
-| `tui_config.c` | Configurador visual em *Alternate Screen Buffer* com Live Preview |
+| `cmdline.c` | Parser bruto de `GetCommandLineW()`, flags e regras de aspas do `cmd.exe` |
+| `backend.c` | Resolução segura de backend + proteção anti-recursão |
+| `autorun.c` | Leitura `KEY_READ` de `AutoRun` (`HKLM`/`HKCU`) |
+| `proxy.c` | Delegação transparente para `/c` e `stdin` redirecionado |
+| `resolver.c` | Precedência `internos -> CWD -> %PATH% × %PATHEXT%` |
+| `state_sync.c` | Serialização e aplicação atômica de `CWD` e ambiente UTF-16LE |
+| `exec.c` | Executor híbrido + built-ins (`alias`, `unalias`, `theme`, `plumbus config`) |
+| `console.c` | Modo raw/cooked do console Win32 e VT 24-bit |
+| `history.c` | Histórico persistente em `%LocalAppData%\plumbus\history` e `Ctrl+R` |
+| `completion.c` | Autocompletar de arquivos, `%VAR%` e subcomandos `git` |
+| `highlight.c` | Syntax highlighting 24-bit em tempo real |
+| `line_editor.c` | Editor de linha estilo Readline/Fish (`ReadConsoleInputW`) |
+| `git_native.c` | Parser binário de repositório Git em C17 puro |
+| `config.c` | Parser/gravador de `%USERPROFILE%\.cmdrc` e tabela de aliases |
+| `prompt.c` | Renderizador dos temas `robbyrussell` e `agnoster` |
+| `tui_config.c` | Configurador interativo em Alternate Screen Buffer (`F2` / `Ctrl+,`) |
